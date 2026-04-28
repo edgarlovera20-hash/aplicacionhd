@@ -1,0 +1,27 @@
+services:
+  # ── Web Service (App) ──────────────────────────────────────────────────────
+  - type: web
+    name: hdreams-crm
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hdreams-db
+          property: connectionString
+      - key: GEMINI_API_KEY
+        sync: false          # Se configura manualmente en el dashboard de Render
+      - key: PASSWORD_SALT
+        generateValue: true  # Render genera un valor aleatorio seguro automáticamente
+
+# ── PostgreSQL Database ────────────────────────────────────────────────────
+databases:
+  - name: hdreams-db
+    databaseName: hdreams_crm
+    user: hdreams_user
+    plan: free               # Cambiar a "starter" o "standard" en producción real

@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  # ── App principal (Node.js + Express + React SPA) ─────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hdreams-app
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-80}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-hdreams_user}:${POSTGRES_PASSWORD:-hdreams_pass}@db:5432/${POSTGRES_DB:-hdreams_crm}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      PASSWORD_SALT: ${PASSWORD_SALT:-hdreams_salt_2026}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - hdreams-net
+
+  # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: hdreams-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hdreams_crm}
+      POSTGRES_USER: ${POSTGRES_USER:-hdreams_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hdreams_pass}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - hdreams-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hdreams_user} -d ${POSTGRES_DB:-hdreams_crm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  hdreams-net:
+    driver: bridge

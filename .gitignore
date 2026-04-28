@@ -1,0 +1,51 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+npm-debug.log*
+*.xlsx
+*.jpg
+*.jpeg
+*.png
+*.pdf
+
+# Variables de entorno — NUNCA subir a git
+.env
+.env.local
+.env.production
+.env.staging
+# Sí incluir el template
+!.env.example
+
+# Base de datos simulada local
+.mockdb.json
+
+# Scripts temporales
+make-zip.ps1
+
+# Configuración de IDE
+.vscode/
+.idea/
+
+# Claude Code worktrees & local-only state
+.claude/
+tscheck.log
+
+# Notas de desarrollo y memoria del asistente — no parte de la app
+memory/
+
+# Datos personales / PII — nunca subir
+*.csv
+*.xlsx
+*.xls
+
+# Scripts locales / ad-hoc
+iniciar.bat
+matar-puerto.bat
+comprimir-proyecto.mjs
+read-excel.ts
+check-ts.mjs
+dashboard.html
+.hintrc
