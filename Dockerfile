@@ -30,6 +30,7 @@ COPY --from=builder /app/build ./build
 # Copiar únicamente los archivos necesarios para el servidor
 COPY server.ts ./
 COPY tsconfig.json ./
+COPY src/ ./src/
 
 # tsx es necesario en runtime para ejecutar server.ts directamente
 # Ya está en dependencies así que npm ci lo instala
