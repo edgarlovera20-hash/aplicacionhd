@@ -260,14 +260,14 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-12">
 
-      {/* AI BANNER */}
-      <div className="bg-gradient-to-r from-blue-600/10 via-indigo-600/10 to-purple-600/10 border border-white/5 rounded-3xl p-6 flex items-center justify-between shadow-2xl relative overflow-hidden group">
+      {/* AI BANNER — apila vertical en móvil, fila en sm+ */}
+      <div className="bg-gradient-to-r from-blue-600/10 via-indigo-600/10 to-purple-600/10 border border-white/5 rounded-3xl p-4 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 shadow-2xl relative overflow-hidden group">
         <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700" />
-        <div className="flex items-center gap-5 relative z-10">
-          <div className="p-3 bg-blue-500/20 rounded-2xl shadow-lg shadow-blue-500/10">
+        <div className="flex items-center gap-4 sm:gap-5 relative z-10 min-w-0">
+          <div className="p-3 bg-blue-500/20 rounded-2xl shadow-lg shadow-blue-500/10 shrink-0">
             <Sparkles className="w-6 h-6 text-blue-400 animate-pulse" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h4 className="text-white font-display font-black text-sm uppercase tracking-wider">AI Insight Management</h4>
             <p className="text-slate-400 text-xs mt-1 font-medium">
               Rendimiento extraordinario detectado. Estás a solo{' '}
@@ -275,7 +275,7 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
             </p>
           </div>
         </div>
-        <button className="px-6 py-2.5 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-white/5 relative z-10 active:scale-95">
+        <button className="self-start sm:self-auto shrink-0 px-4 sm:px-6 py-2.5 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-white/5 relative z-10 active:scale-95 whitespace-nowrap">
           Ver Desafíos
         </button>
       </div>

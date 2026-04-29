@@ -185,7 +185,7 @@ export default function AuthView() {
   };
 
   return (
-    <div className="relative z-10 flex flex-col items-center justify-center min-h-full px-4 py-8 w-full max-w-xl mx-auto">
+    <div className="relative z-10 flex flex-col items-center justify-center min-h-screen px-4 py-8 w-full max-w-xl mx-auto">
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
