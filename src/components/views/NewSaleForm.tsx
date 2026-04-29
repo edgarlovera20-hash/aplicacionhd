@@ -1239,12 +1239,41 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                     </div>
                   )}
                 </div>
-                <div className="h-40 bg-slate-900 rounded-xl overflow-hidden relative border border-white/5">
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
-                    <MapPin className="w-7 h-7 mb-1 opacity-40" />
-                    <span className="text-xs">{form.coordenadas || 'Sin coordenadas'}</span>
-                  </div>
-                  <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'linear-gradient(#fff 1px,transparent 1px),linear-gradient(90deg,#fff 1px,transparent 1px)', backgroundSize: '20px 20px' }} />
+                {/* Mapa real con marker — Google Maps Embed (sin API key requerida).
+                    Usa coordenadas si OCR las extrajo del comprobante; si no, arma
+                    la query con la dirección textual capturada. */}
+                <div className="h-48 bg-slate-900 rounded-xl overflow-hidden relative border border-white/5">
+                  {(() => {
+                    const coords = form.coordenadas?.trim();
+                    const hasCoords = coords && /^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(coords);
+                    const addressQuery = [
+                      form.calle,
+                      form.numeroExterior,
+                      form.colonia,
+                      form.ciudad,
+                      form.codigoPostal,
+                      'México',
+                    ].filter(Boolean).join(', ');
+                    const query = hasCoords ? coords : addressQuery;
+                    if (!query || query === 'México') {
+                      return (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
+                          <MapPin className="w-7 h-7 mb-1 opacity-40" />
+                          <span className="text-xs">Sin dirección capturada todavía</span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <iframe
+                        title="Ubicación de instalación"
+                        src={`https://www.google.com/maps?q=${encodeURIComponent(query)}&z=17&output=embed`}
+                        className="w-full h-full border-0"
+                        loading="lazy"
+                        referrerPolicy="no-referrer-when-downgrade"
+                        allowFullScreen
+                      />
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -1588,6 +1617,11 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                     setSignatureBase64(base64);
                     setSignatureConfirmed(true);
                     updateForm({ videoFirmaUrl: base64 });
+                    // Sube la video-firma al expediente. Usa el mimetype real
+                    // detectado en el data-URL (image/png para firmas dibujadas,
+                    // video/webm si SignaturePad pasa a usar MediaRecorder).
+                    uploadToExpediente('videofirma', base64, detectMime(base64, 'image/png'))
+                      .then(p => { if (p) updateForm({ videoFirmaPath: p }); });
                   }}
                   showCamera={true}
                 />
