@@ -6,6 +6,7 @@ import helmet from "helmet";
 import compression from "compression";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import dotenv from "dotenv";
 import pkg from "pg";
 import { whatsappEngine } from "./src/agents/whatsappEngine";
@@ -49,7 +50,10 @@ async function startServer() {
   app.use(compression());
   app.use(express.json({ limit: '10mb' }));
 
-  // ── Proveedor IA: Gemini (2 claves) → OpenAI (fallback final) ─────────────
+  // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
+  const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
+
   const geminiKeys = [
     process.env.GEMINI_API_KEY,
     process.env.GEMINI_API_KEY_2,
@@ -58,8 +62,15 @@ async function startServer() {
   const openaiKey = process.env.OPENAI_API_KEY || "";
   const openaiClient = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
 
+  // Modelos Claude por uso:
+  //  - Vision (OCR INE/CURP/comprobante): claude-haiku-4-5 — rápido y barato (~$1/$5 per M)
+  //  - Texto general (chat, resúmenes):    claude-sonnet-4-6 — 1M ctx, adaptive thinking
+  const CLAUDE_TEXT_MODEL   = process.env.CLAUDE_TEXT_MODEL   || "claude-sonnet-4-6";
+  const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5";
+
   const providers: string[] = [];
-  if (geminiKeys.length > 0) providers.push(`Gemini x${geminiKeys.length}`);
+  if (anthropicClient)        providers.push(`Claude (${CLAUDE_TEXT_MODEL} / ${CLAUDE_VISION_MODEL})`);
+  if (geminiKeys.length > 0)  providers.push(`Gemini x${geminiKeys.length}`);
   if (openaiClient)           providers.push("OpenAI GPT-4o-mini");
   if (providers.length === 0) {
     console.warn("Sin claves de IA configuradas.");
@@ -69,13 +80,80 @@ async function startServer() {
 
   let currentGeminiIdx = 0;
 
+  /**
+   * Convierte el formato Gemini (parts con inlineData) al formato Claude (content blocks).
+   * Devuelve null si alguna parte no es traducible (tipo no soportado por Claude).
+   */
+  const partsToClaudeContent = (
+    parts: any[]
+  ): Anthropic.ContentBlockParam[] | null => {
+    const out: Anthropic.ContentBlockParam[] = [];
+    for (const p of parts) {
+      if (typeof p === "string") {
+        out.push({ type: "text", text: p });
+      } else if (p?.inlineData?.data && p?.inlineData?.mimeType) {
+        const mt = p.inlineData.mimeType as string;
+        if (mt === "application/pdf") {
+          out.push({
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: p.inlineData.data },
+          });
+        } else if (/^image\/(jpeg|png|gif|webp)$/.test(mt)) {
+          out.push({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: mt as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+              data: p.inlineData.data,
+            },
+          });
+        } else {
+          // Tipo no soportado por Claude — caer a Gemini.
+          return null;
+        }
+      } else if (p?.text) {
+        out.push({ type: "text", text: p.text });
+      } else {
+        return null;
+      }
+    }
+    return out;
+  };
+
   const aiGenerate = async (
     promptOrParts: string | any[],
     { visionMode = false } = {}
   ): Promise<string> => {
     const isText = typeof promptOrParts === "string";
-    let lastGeminiError: any = null;
+    let lastErr: any = null;
 
+    // ── Intento 1: Claude ─────────────────────────────────────────────────
+    if (anthropicClient) {
+      try {
+        const content: Anthropic.ContentBlockParam[] | null = isText
+          ? [{ type: "text", text: promptOrParts as string }]
+          : partsToClaudeContent(promptOrParts as any[]);
+        if (content) {
+          const model = visionMode ? CLAUDE_VISION_MODEL : CLAUDE_TEXT_MODEL;
+          const resp = await anthropicClient.messages.create({
+            model,
+            max_tokens: 4096,
+            messages: [{ role: "user", content }],
+          });
+          const textBlock = resp.content.find(
+            (b): b is Anthropic.TextBlock => b.type === "text"
+          );
+          if (textBlock) return textBlock.text;
+        }
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(
+          `Claude fallo (${err?.status ?? err?.message?.slice(0, 80)}) — probando Gemini...`
+        );
+      }
+    }
+
+    // ── Intento 2: Gemini (rotación entre claves) ─────────────────────────
     for (let attempt = 0; attempt < geminiKeys.length; attempt++) {
       const keyIdx = (currentGeminiIdx + attempt) % geminiKeys.length;
       try {
@@ -85,13 +163,14 @@ async function startServer() {
         currentGeminiIdx = keyIdx;
         return result.response.text();
       } catch (err: any) {
-        lastGeminiError = err;
+        lastErr = err;
         console.warn(`Gemini clave ${keyIdx + 1} fallo (${err?.status ?? err?.message?.slice(0,60)}) — probando siguiente...`);
       }
     }
 
+    // ── Intento 3: OpenAI (solo texto, sin visión) ────────────────────────
     if (openaiClient && isText && !visionMode) {
-      console.warn("Usando OpenAI GPT-4o-mini como respaldo.");
+      console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
       const chat = await openaiClient.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [{ role: "user", content: promptOrParts as string }],
@@ -100,7 +179,7 @@ async function startServer() {
       return chat.choices[0]?.message?.content || "";
     }
 
-    throw lastGeminiError || new Error("No hay proveedores de IA disponibles.");
+    throw lastErr || new Error("No hay proveedores de IA disponibles.");
   };
 
   const geminiGenerate = aiGenerate;
@@ -887,7 +966,7 @@ async function startServer() {
     return chunks.filter(c => c.length > 20);
   };
 
-  /** Extrae texto plano de un archivo (base64). Usa Gemini para PDF/imágenes/DOCX */
+  /** Extrae texto plano de un archivo (base64). Usa Claude vision (primario) → Gemini (fallback). */
   const extractText = async (
     base64: string,
     mimetype: string,
@@ -897,20 +976,20 @@ async function startServer() {
     if (textTypes.some(t => mimetype.startsWith(t))) {
       return Buffer.from(base64, 'base64').toString('utf-8');
     }
-    // Gemini multimodal para PDF / imágenes / DOCX / etc.
-    if (geminiKeys.length === 0) return `[Sin clave Gemini — contenido de ${filename} no extraído]`;
-    const client = new GoogleGenerativeAI(geminiKeys[0]);
-    const model  = client.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    const result = await model.generateContent([
-      {
-        inlineData: { mimeType: mimetype as any, data: base64 },
-      },
-      `Extrae TODO el texto de este documento de forma fiel, sin parafrasear.
+    // Vision multimodal — Claude Haiku 4.5 (primario) → Gemini Flash (fallback) vía aiGenerate.
+    if (!anthropicClient && geminiKeys.length === 0) {
+      return `[Sin proveedor de visión — contenido de ${filename} no extraído]`;
+    }
+    return aiGenerate(
+      [
+        { inlineData: { mimeType: mimetype as any, data: base64 } },
+        `Extrae TODO el texto de este documento de forma fiel, sin parafrasear.
 Si es un PDF o imagen, transcribe el contenido completo.
 Si es una tabla o CSV, convierte a texto estructurado.
 Responde únicamente con el texto extraído, sin comentarios adicionales.`,
-    ]);
-    return result.response.text();
+      ],
+      { visionMode: true }
+    );
   };
 
   /** Búsqueda BM25-lite: devuelve chunks más relevantes para una query */
