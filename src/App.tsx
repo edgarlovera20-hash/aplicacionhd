@@ -104,12 +104,13 @@ export default function App() {
       </div>
 
       {user && isBotVisible && (
-        <motion.div 
+        <motion.div
           drag
           dragConstraints={constraintsRef}
           dragElastic={0.1}
           dragMomentum={false}
-          className="fixed bottom-6 left-6 z-50 flex flex-col items-center gap-2 cursor-grab active:cursor-grabbing"
+          // En móvil: bottom-24 para no chocar con el bottom-nav (h-20). En desktop: bottom-6.
+          className="fixed bottom-24 md:bottom-6 left-6 z-50 flex flex-col items-center gap-2 cursor-grab active:cursor-grabbing"
           style={{ touchAction: 'none' }}
         >
           <button
@@ -135,7 +136,7 @@ export default function App() {
       {user && !isBotVisible && (
         <button
           onClick={() => setIsBotVisible(true)}
-          className="fixed bottom-6 left-0 z-50 bg-blue-600/50 hover:bg-blue-500/80 backdrop-blur-md border border-blue-400/30 text-white p-2 rounded-r-xl shadow-lg transition-all flex items-center gap-2 group"
+          className="fixed bottom-24 md:bottom-6 left-0 z-50 bg-blue-600/50 hover:bg-blue-500/80 backdrop-blur-md border border-blue-400/30 text-white p-2 rounded-r-xl shadow-lg transition-all flex items-center gap-2 group"
           title="Mostrar asistente"
         >
           <MessageCircle className="w-5 h-5" />

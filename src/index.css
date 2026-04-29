@@ -55,17 +55,21 @@
     --grid-opacity:       0.08;      /* ≤ 15% as specified */
     --grid-color:         rgba(59,130,246,var(--grid-opacity));
 
-    /* ── Typography ─────────────────────────────────────────── */
-    --text-kpi-value:     3.5rem;    /* 56px – main KPI number  */
-    --text-kpi-label:     0.875rem;  /* 14px – KPI label        */
+    /* ── Typography (responsive con clamp) ──────────────────── */
+    /* Escala entre móvil y desktop sin media queries: clamp(min, fluid, max). */
+    --text-kpi-value:     clamp(2rem, 1.25rem + 3.5vw, 3.5rem);    /* 32px → 56px */
+    --text-kpi-label:     clamp(0.75rem, 0.65rem + 0.3vw, 0.875rem); /* 12px → 14px */
     --lh-normal:          1.6;
     --lh-heading:         1.5;
     --lh-tight:           1.3;
 
-    /* ── Spacing ─────────────────────────────────────────────── */
-    --nav-item-py:        12px;
-    --nav-item-px:        20px;
-    --card-pad:           1.5rem;
+    /* ── Spacing (responsive) ────────────────────────────────── */
+    /* Padding del nav-item se reduce en móvil para no comer pantalla. */
+    --nav-item-py:        clamp(8px, 0.5rem + 0.4vw, 12px);
+    --nav-item-px:        clamp(12px, 0.6rem + 0.8vw, 20px);
+    --card-pad:           clamp(1rem, 0.75rem + 1vw, 1.5rem);
+    --section-pad-x:      clamp(1rem, 0.5rem + 2vw, 2.5rem);
+    --section-pad-y:      clamp(1rem, 0.75rem + 1.25vw, 2rem);
 
     /* ── Shadows ─────────────────────────────────────────────── */
     --shadow-card:        0 8px 32px 0 rgba(0,0,0,0.4);
@@ -277,10 +281,9 @@
   }
   .btn-neutral:hover { background: #334155; color: #fff; }
 
-  /* ── Search Bar ────────────────────────────────────────────── */
+  /* ── Search Bar (responsive: full-width en móvil, acotado en desktop) ── */
   .search-bar {
-    width: 30%;
-    min-width: 200px;
+    width: 100%;                /* móvil: ocupa todo el ancho disponible */
     max-width: 320px;
     background: var(--surface-1);
     border: 1px solid var(--glass-border);
@@ -291,9 +294,27 @@
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
   }
+  @media (min-width: 768px) {
+    .search-bar {
+      width: 30%;
+      min-width: 200px;
+    }
+  }
   .search-bar:focus {
     border-color: rgba(59,130,246,0.5);
     box-shadow: 0 0 0 2px rgba(59,130,246,0.10);
+  }
+
+  /* ── Section padding (sustituye p-6 / p-8 hardcodeados) ─────── */
+  .section-pad   { padding: var(--section-pad-y) var(--section-pad-x); }
+  .section-pad-x { padding-left: var(--section-pad-x); padding-right: var(--section-pad-x); }
+  .section-pad-y { padding-top: var(--section-pad-y); padding-bottom: var(--section-pad-y); }
+  .card-pad      { padding: var(--card-pad); }
+
+  /* ── Touch target seguro en móvil (Apple/Google: ≥44px) ─────── */
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
   }
 
   /* ── Grid background (reduced opacity ≤15%) ─────────────── */

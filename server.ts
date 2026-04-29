@@ -2,8 +2,11 @@ import express from "express";
 import path from "path";
 import crypto from "crypto";
 import fs from "fs";
+import helmet from "helmet";
+import compression from "compression";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import dotenv from "dotenv";
 import pkg from "pg";
 import { whatsappEngine } from "./src/agents/whatsappEngine";
@@ -11,13 +14,46 @@ const { Pool } = pkg;
 
 dotenv.config();
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// ── Validación de entorno crítico (fail-fast en producción) ───────────────────
+if (IS_PROD) {
+  const required = ["PASSWORD_SALT"];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.error(`[FATAL] Faltan variables de entorno requeridas en producción: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+  if (!process.env.DATABASE_URL) {
+    console.warn("[WARN] DATABASE_URL no está definida — la app correrá con MockDB (no persistente).");
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3001', 10);
 
+  // Railway/Render/Heroku están detrás de un proxy — confiamos solo en el primero
+  // para que req.ip / X-Forwarded-For funcione correctamente con rate limiting.
+  app.set("trust proxy", 1);
+
+  // ── Seguridad: cabeceras + compresión ─────────────────────────────────────
+  app.use(
+    helmet({
+      // CSP deshabilitado: la app embebe scripts inline (Vite dev) y conecta a
+      // dominios externos (Gemini, OpenAI, Twilio). Si se quiere endurecer, hay
+      // que listar todos los origins permitidos. Por ahora solo otras cabeceras.
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+  app.use(compression());
   app.use(express.json({ limit: '10mb' }));
 
-  // ── Proveedor IA: Gemini (2 claves) → OpenAI (fallback final) ─────────────
+  // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
+  const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
+
   const geminiKeys = [
     process.env.GEMINI_API_KEY,
     process.env.GEMINI_API_KEY_2,
@@ -26,8 +62,15 @@ async function startServer() {
   const openaiKey = process.env.OPENAI_API_KEY || "";
   const openaiClient = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
 
+  // Modelos Claude por uso:
+  //  - Vision (OCR INE/CURP/comprobante): claude-haiku-4-5 — rápido y barato (~$1/$5 per M)
+  //  - Texto general (chat, resúmenes):    claude-sonnet-4-6 — 1M ctx, adaptive thinking
+  const CLAUDE_TEXT_MODEL   = process.env.CLAUDE_TEXT_MODEL   || "claude-sonnet-4-6";
+  const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5";
+
   const providers: string[] = [];
-  if (geminiKeys.length > 0) providers.push(`Gemini x${geminiKeys.length}`);
+  if (anthropicClient)        providers.push(`Claude (${CLAUDE_TEXT_MODEL} / ${CLAUDE_VISION_MODEL})`);
+  if (geminiKeys.length > 0)  providers.push(`Gemini x${geminiKeys.length}`);
   if (openaiClient)           providers.push("OpenAI GPT-4o-mini");
   if (providers.length === 0) {
     console.warn("Sin claves de IA configuradas.");
@@ -37,13 +80,80 @@ async function startServer() {
 
   let currentGeminiIdx = 0;
 
+  /**
+   * Convierte el formato Gemini (parts con inlineData) al formato Claude (content blocks).
+   * Devuelve null si alguna parte no es traducible (tipo no soportado por Claude).
+   */
+  const partsToClaudeContent = (
+    parts: any[]
+  ): Anthropic.ContentBlockParam[] | null => {
+    const out: Anthropic.ContentBlockParam[] = [];
+    for (const p of parts) {
+      if (typeof p === "string") {
+        out.push({ type: "text", text: p });
+      } else if (p?.inlineData?.data && p?.inlineData?.mimeType) {
+        const mt = p.inlineData.mimeType as string;
+        if (mt === "application/pdf") {
+          out.push({
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: p.inlineData.data },
+          });
+        } else if (/^image\/(jpeg|png|gif|webp)$/.test(mt)) {
+          out.push({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: mt as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+              data: p.inlineData.data,
+            },
+          });
+        } else {
+          // Tipo no soportado por Claude — caer a Gemini.
+          return null;
+        }
+      } else if (p?.text) {
+        out.push({ type: "text", text: p.text });
+      } else {
+        return null;
+      }
+    }
+    return out;
+  };
+
   const aiGenerate = async (
     promptOrParts: string | any[],
     { visionMode = false } = {}
   ): Promise<string> => {
     const isText = typeof promptOrParts === "string";
-    let lastGeminiError: any = null;
+    let lastErr: any = null;
 
+    // ── Intento 1: Claude ─────────────────────────────────────────────────
+    if (anthropicClient) {
+      try {
+        const content: Anthropic.ContentBlockParam[] | null = isText
+          ? [{ type: "text", text: promptOrParts as string }]
+          : partsToClaudeContent(promptOrParts as any[]);
+        if (content) {
+          const model = visionMode ? CLAUDE_VISION_MODEL : CLAUDE_TEXT_MODEL;
+          const resp = await anthropicClient.messages.create({
+            model,
+            max_tokens: 4096,
+            messages: [{ role: "user", content }],
+          });
+          const textBlock = resp.content.find(
+            (b): b is Anthropic.TextBlock => b.type === "text"
+          );
+          if (textBlock) return textBlock.text;
+        }
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(
+          `Claude fallo (${err?.status ?? err?.message?.slice(0, 80)}) — probando Gemini...`
+        );
+      }
+    }
+
+    // ── Intento 2: Gemini (rotación entre claves) ─────────────────────────
     for (let attempt = 0; attempt < geminiKeys.length; attempt++) {
       const keyIdx = (currentGeminiIdx + attempt) % geminiKeys.length;
       try {
@@ -53,13 +163,14 @@ async function startServer() {
         currentGeminiIdx = keyIdx;
         return result.response.text();
       } catch (err: any) {
-        lastGeminiError = err;
+        lastErr = err;
         console.warn(`Gemini clave ${keyIdx + 1} fallo (${err?.status ?? err?.message?.slice(0,60)}) — probando siguiente...`);
       }
     }
 
+    // ── Intento 3: OpenAI (solo texto, sin visión) ────────────────────────
     if (openaiClient && isText && !visionMode) {
-      console.warn("Usando OpenAI GPT-4o-mini como respaldo.");
+      console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
       const chat = await openaiClient.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [{ role: "user", content: promptOrParts as string }],
@@ -68,7 +179,7 @@ async function startServer() {
       return chat.choices[0]?.message?.content || "";
     }
 
-    throw lastGeminiError || new Error("No hay proveedores de IA disponibles.");
+    throw lastErr || new Error("No hay proveedores de IA disponibles.");
   };
 
   const geminiGenerate = aiGenerate;
@@ -500,6 +611,16 @@ async function startServer() {
       const { folio, estado, paqueteNombre, nombres, telefonoTitular, rentaMensual, ...data } = req.body;
       const isUpdate = !!mockDb.ventas.find(v => v.folio === folio);
 
+      // Si el frontend ya subió los archivos al expediente y nos pasó los paths,
+      // tiramos los base64 inline para no duplicar (el JSON crecía decenas de MB
+      // por cada venta). Las claves *Path son la fuente de verdad ahora.
+      if (data.ineFrentePath)        delete data.ineFrente;
+      if (data.ineReversoPath)       delete data.ineReverso;
+      if (data.curpDocPath)          delete data.curpDoc;
+      if (data.comprobantePath)      delete data.comprobanteDomicilio;
+      if (data.videoFirmaPath)       delete data.videoFirmaBlob;
+      if (data.audioValidacionPath)  delete data.audioValidacion;
+
       if (isDbConnected) {
         await pool.query(
           "INSERT INTO ventas (folio, estado, paquete_nombre, nombres, telefono, renta_mensual, data) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (folio) DO UPDATE SET estado = EXCLUDED.estado",
@@ -855,7 +976,7 @@ async function startServer() {
     return chunks.filter(c => c.length > 20);
   };
 
-  /** Extrae texto plano de un archivo (base64). Usa Gemini para PDF/imágenes/DOCX */
+  /** Extrae texto plano de un archivo (base64). Usa Claude vision (primario) → Gemini (fallback). */
   const extractText = async (
     base64: string,
     mimetype: string,
@@ -865,20 +986,20 @@ async function startServer() {
     if (textTypes.some(t => mimetype.startsWith(t))) {
       return Buffer.from(base64, 'base64').toString('utf-8');
     }
-    // Gemini multimodal para PDF / imágenes / DOCX / etc.
-    if (geminiKeys.length === 0) return `[Sin clave Gemini — contenido de ${filename} no extraído]`;
-    const client = new GoogleGenerativeAI(geminiKeys[0]);
-    const model  = client.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    const result = await model.generateContent([
-      {
-        inlineData: { mimeType: mimetype as any, data: base64 },
-      },
-      `Extrae TODO el texto de este documento de forma fiel, sin parafrasear.
+    // Vision multimodal — Claude Haiku 4.5 (primario) → Gemini Flash (fallback) vía aiGenerate.
+    if (!anthropicClient && geminiKeys.length === 0) {
+      return `[Sin proveedor de visión — contenido de ${filename} no extraído]`;
+    }
+    return aiGenerate(
+      [
+        { inlineData: { mimeType: mimetype as any, data: base64 } },
+        `Extrae TODO el texto de este documento de forma fiel, sin parafrasear.
 Si es un PDF o imagen, transcribe el contenido completo.
 Si es una tabla o CSV, convierte a texto estructurado.
 Responde únicamente con el texto extraído, sin comentarios adicionales.`,
-    ]);
-    return result.response.text();
+      ],
+      { visionMode: true }
+    );
   };
 
   /** Búsqueda BM25-lite: devuelve chunks más relevantes para una query */
@@ -1172,6 +1293,182 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
       res.status(500).json({ error: error.message || "Error processing document" });
     }
   });
+
+  // ================= EXPEDIENTES (PDFs · Audios · Videos) =================
+  // Estructura física en disco:
+  //   uploads/expedientes/{folio}/
+  //     ├── documentos/   (INE frente/reverso, CURP, comprobante de domicilio)
+  //     ├── audios/       (grabaciones de llamadas de validación)
+  //     └── videos/       (video-firmas)
+  //
+  // Pipeline: el frontend manda base64 vía JSON al endpoint de upload, el server
+  // decodifica y guarda al disco. Devuelve el path relativo. Cuando se finaliza
+  // la venta (POST /api/ventas), se prefiere el path sobre el base64 — los
+  // archivos pesados ya no se duplican dentro del JSON de la venta.
+  const UPLOADS_ROOT = path.join(process.cwd(), 'uploads', 'expedientes');
+  if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+
+  type ExpedienteTipo =
+    | 'ine_frente' | 'ine_reverso' | 'curp' | 'comprobante'
+    | 'audio_validacion' | 'videofirma';
+
+  const TIPO_TO_SUBFOLDER: Record<ExpedienteTipo, string> = {
+    ine_frente:       'documentos',
+    ine_reverso:      'documentos',
+    curp:             'documentos',
+    comprobante:      'documentos',
+    audio_validacion: 'audios',
+    videofirma:       'videos',
+  };
+
+  const mimeToExt = (mt: string): string => {
+    const m = mt.toLowerCase();
+    if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
+    if (m === 'image/png')  return 'png';
+    if (m === 'image/webp') return 'webp';
+    if (m === 'image/gif')  return 'gif';
+    if (m === 'application/pdf') return 'pdf';
+    if (m === 'audio/webm') return 'webm';
+    if (m === 'audio/ogg')  return 'ogg';
+    if (m === 'audio/mpeg' || m === 'audio/mp3') return 'mp3';
+    if (m === 'audio/wav')  return 'wav';
+    if (m === 'video/webm') return 'webm';
+    if (m === 'video/mp4')  return 'mp4';
+    return 'bin';
+  };
+
+  // Sanitiza folio para usarlo como nombre de carpeta (path traversal safe).
+  const safeFolio = (folio: string): string =>
+    String(folio || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+
+  // Body parser dedicado con límite alto solo para uploads de expediente.
+  // (videos webm de 60s pueden pesar 10-30 MB en base64.)
+  const expedienteUploadJson = express.json({ limit: '50mb' });
+
+  // POST /api/expediente/:folio/upload — guarda un archivo en su subcarpeta.
+  // Body: { tipo, base64, mimetype, filename? }
+  app.post('/api/expediente/:folio/upload', expedienteUploadJson, async (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      if (!folio) return res.status(400).json({ error: 'Folio inválido' });
+
+      const { tipo, base64, mimetype, filename } = req.body as {
+        tipo: ExpedienteTipo; base64: string; mimetype: string; filename?: string;
+      };
+      if (!tipo || !base64 || !mimetype) {
+        return res.status(400).json({ error: 'Faltan campos: tipo, base64, mimetype' });
+      }
+      const subfolder = TIPO_TO_SUBFOLDER[tipo];
+      if (!subfolder) {
+        return res.status(400).json({
+          error: `Tipo inválido: ${tipo}. Permitidos: ${Object.keys(TIPO_TO_SUBFOLDER).join(', ')}`
+        });
+      }
+
+      const dir = path.join(UPLOADS_ROOT, folio, subfolder);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+      const ext = mimeToExt(mimetype);
+      // Documentos: nombre estable (ine_frente.jpg) — sobreescribe si recapturan.
+      // Audios/videos: timestamp para conservar histórico de intentos de grabación.
+      const isHistoric = subfolder === 'audios' || subfolder === 'videos';
+      const safeFilename = filename
+        ? filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80)
+        : isHistoric
+          ? `${tipo}_${Date.now()}.${ext}`
+          : `${tipo}.${ext}`;
+      const fullPath = path.join(dir, safeFilename);
+
+      // Decodifica base64 (admite data-URL completa o solo el cuerpo).
+      const cleanB64 = base64.includes(',') ? base64.split(',')[1] : base64;
+      const buf = Buffer.from(cleanB64, 'base64');
+      // Hard cap por archivo: 50 MB (después del decode, no del base64).
+      if (buf.length > 50 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Archivo > 50 MB no permitido' });
+      }
+      fs.writeFileSync(fullPath, buf);
+
+      const relativePath = `/uploads/expedientes/${folio}/${subfolder}/${safeFilename}`;
+
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'subir_archivo_expediente', 'expedientes', {
+        folio, tipo, path: relativePath, size: buf.length, mimetype,
+      });
+
+      res.json({ path: relativePath, size: buf.length, tipo, folio });
+    } catch (e: any) {
+      console.error('Expediente upload error:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/expediente/:folio/files — lista archivos del expediente.
+  app.get('/api/expediente/:folio/files', (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const baseDir = path.join(UPLOADS_ROOT, folio);
+      if (!fs.existsSync(baseDir)) return res.json({ folio, files: [] });
+
+      type FileEntry = {
+        subfolder: string; filename: string; path: string; size: number; mtime: string;
+      };
+      const result: FileEntry[] = [];
+      for (const sub of ['documentos', 'audios', 'videos']) {
+        const subDir = path.join(baseDir, sub);
+        if (!fs.existsSync(subDir)) continue;
+        for (const fname of fs.readdirSync(subDir)) {
+          const full = path.join(subDir, fname);
+          const stat = fs.statSync(full);
+          if (!stat.isFile()) continue;
+          result.push({
+            subfolder: sub,
+            filename: fname,
+            path: `/uploads/expedientes/${folio}/${sub}/${fname}`,
+            size: stat.size,
+            mtime: stat.mtime.toISOString(),
+          });
+        }
+      }
+      res.json({ folio, files: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/expediente/:folio/file — elimina un archivo (solo gerente/admin).
+  app.delete('/api/expediente/:folio/file', requireRole('gerente', 'administracion'), (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const { subfolder, filename } = req.body as { subfolder: string; filename: string };
+      if (!subfolder || !filename) return res.status(400).json({ error: 'subfolder y filename requeridos' });
+      // Evita path traversal: subfolder solo puede ser una de las 3 carpetas conocidas.
+      if (!['documentos', 'audios', 'videos'].includes(subfolder)) {
+        return res.status(400).json({ error: 'subfolder inválido' });
+      }
+      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const full = path.join(UPLOADS_ROOT, folio, subfolder, safeName);
+      if (!fs.existsSync(full)) return res.status(404).json({ error: 'Archivo no encontrado' });
+      fs.unlinkSync(full);
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'eliminar_archivo_expediente', 'expedientes',
+        { folio, subfolder, filename: safeName });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Servir archivos estáticos /uploads/expedientes/* — autenticado vía Bearer
+  // header O ?token=... (los <img>/<audio>/<video> no envían Authorization).
+  const expedienteStaticAuth = (req: any, res: any, next: any) => {
+    const token = (req.headers?.authorization || '').replace('Bearer ', '')
+                  || String(req.query?.token || '');
+    if (!token) return res.status(401).send('No autenticado');
+    const sess = sessionStore.get(token);
+    if (!sess || Date.now() > sess.exp) return res.status(401).send('Sesión expirada');
+    next();
+  };
+  app.use('/uploads/expedientes', expedienteStaticAuth, express.static(UPLOADS_ROOT));
 
   // ================= ADMIN: USUARIOS =================
 
@@ -2726,12 +3023,44 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     res.send("﻿" + csv);
   });
 
-  // ================= HEALTH CHECK =================
-  app.get("/health", (_req, res) => {
-    res.json({
-      status: "ok",
+  // ================= HEALTH CHECKS =================
+  // Liveness — siempre responde si el proceso está vivo (Railway/Render lo usan
+  // para detectar crashes; debe ser barato).
+  app.get("/health/live", (_req, res) => {
+    res.json({ status: "ok", ts: new Date().toISOString() });
+  });
+
+  // Readiness — verifica DB y devuelve 503 si la app no puede servir tráfico.
+  app.get("/health/ready", async (_req, res) => {
+    let dbOk = false;
+    if (isDbConnected) {
+      try {
+        await pool.query("SELECT 1");
+        dbOk = true;
+      } catch {
+        dbOk = false;
+      }
+    }
+    const status = dbOk || !isDbConnected ? "ok" : "degraded";
+    res.status(dbOk || !isDbConnected ? 200 : 503).json({
+      status,
       env: process.env.NODE_ENV || "development",
-      db: isDbConnected ? "postgres" : "mock",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      ts: new Date().toISOString(),
+    });
+  });
+
+  // Backwards compatibility — Railway usa /health por default según railway.json.
+  app.get("/health", async (_req, res) => {
+    let dbOk = !isDbConnected;
+    if (isDbConnected) {
+      try { await pool.query("SELECT 1"); dbOk = true; } catch { dbOk = false; }
+    }
+    res.status(dbOk ? 200 : 503).json({
+      status: dbOk ? "ok" : "degraded",
+      env: process.env.NODE_ENV || "development",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      uptime: Math.round(process.uptime()),
       ts: new Date().toISOString(),
     });
   });
@@ -3344,8 +3673,19 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // ═══════════════════════════════════════════════════════════════════════════
   //  ADMIN: aplicar RBAC a rutas sensibles
   // ═══════════════════════════════════════════════════════════════════════════
-  // Rate-limit al endpoint de login
-  app.use('/api/auth/login', rateLimit(10, 60_000));
+  // Rate-limits — protegen endpoints que invocan IA, OCR o tocan datos críticos.
+  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
+  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
+  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
+  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini
+  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads de expediente (INE, video, audio)
+  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
+  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
+  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
+  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
+  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
+  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
+  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
 
   // ================= VITE MIDDLEWARE (dev) / STATIC (prod) =================
   if (process.env.NODE_ENV !== "production") {
@@ -3366,12 +3706,60 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // Bootstrap WhatsApp engine (detects whatsapp-web.js or runs in stub mode)
   whatsappEngine.init().catch(err => console.warn('[WA Engine] init error:', err));
 
-  app.listen(PORT, "0.0.0.0", () => {
+  // 404 JSON para rutas /api desconocidas (mejor que devolver el index.html)
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Endpoint no encontrado' });
+  });
+
+  // Error handler global — última línea antes de que Express devuelva 500 sin contexto
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    console.error('[ERROR]', err?.stack || err?.message || err);
+    if (res.headersSent) return;
+    res.status(500).json({
+      error: IS_PROD ? 'Error interno del servidor' : (err?.message || 'Error desconocido'),
+    });
+  });
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`\nHeavenly Dreams CRM — ${process.env.NODE_ENV || 'development'} mode`);
     console.log(`   -> http://localhost:${PORT}`);
     console.log(`   -> DB: ${isDbConnected ? 'PostgreSQL' : 'Mock DB'}\n`);
     console.log(`   -> Agent registry: 6 system + recruitmentAgents (WA mode: ${whatsappEngine.getMode()})\n`);
   });
+
+  // ── Graceful shutdown ─────────────────────────────────────────────────────
+  // Railway envía SIGTERM antes de matar el contenedor; queremos cerrar
+  // conexiones abiertas (HTTP, DB, SSE) limpiamente para no perder requests
+  // en vuelo.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[${signal}] Cerrando servidor...`);
+    const forceExit = setTimeout(() => {
+      console.error('[SHUTDOWN] Timeout de 10s — forzando salida.');
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+    server.close(async () => {
+      try { await pool.end(); } catch {}
+      console.log('[SHUTDOWN] HTTP y DB cerrados. Bye.');
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
+
+  // No queremos que un error no manejado tire el proceso silenciosamente.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection]', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[uncaughtException]', err);
+  });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[FATAL] No se pudo iniciar el servidor:', err);
+  process.exit(1);
+});
