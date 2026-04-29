@@ -12,7 +12,7 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { api } from '../../api';
 import SignaturePad from '../ui/SignaturePad';
-import { extractINEData, extractComprobanteData, compareAddresses, INEData, ComprobanteData, AddressComponents } from '../../utils/ocr.utils';
+import { compareAddresses, AddressComponents } from '../../utils/ocr.utils';
 import { formatAddressOneLine, isAddressValid, getMissingAddressFields, expandStateAbbr } from '../../utils/address.utils';
 import { stampSignatureIntoPDF, generateSignedPdfFilename, canvasToSignatureBase64 } from '../../utils/pdf.utils';
 import { findZoneByLocality, bgClassForLevel, formatMXN } from '../../utils/riskZones';
@@ -63,6 +63,13 @@ interface CustomerCaptureData {
   nip?: string;
   videoFirmaUrl?: string;
   videoFirmaBlob?: string;   // objectURL for playback
+  // Paths relativos en /uploads/expedientes/{folio}/... (set por uploadToExpediente)
+  ineFrentePath?: string;
+  ineReversoPath?: string;
+  curpDocPath?: string;
+  comprobantePath?: string;
+  videoFirmaPath?: string;
+  audioValidacionPath?: string;
   hashExpediente?: string;
   constanciaNom151?: string;
   fechaSolicitud: string;
@@ -569,7 +576,36 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
   const handlePrev = () => setStep(s => Math.max(s - 1, 1));
   const updateForm = (u: Partial<CustomerCaptureData>) => setForm(p => ({ ...p, ...u }));
 
-  /* OCR call with address extraction and comparison */
+  /* Helper: extrae mimetype de una data-URL base64 (default jpg). */
+  const detectMime = (base64: string, fallback = 'image/jpeg'): string => {
+    const m = base64.match(/^data:([^;]+);base64,/);
+    return m ? m[1] : fallback;
+  };
+
+  /* Sube un archivo al expediente del folio actual y devuelve el path relativo.
+   * Si falla, devuelve null y el flujo sigue (la venta se podrá guardar igual,
+   * pero solo con el base64 inline como antes). */
+  const uploadToExpediente = async (
+    tipo: 'ine_frente'|'ine_reverso'|'curp'|'comprobante'|'audio_validacion'|'videofirma',
+    base64: string,
+    mimetype: string,
+    filename?: string,
+  ): Promise<string | null> => {
+    try {
+      const r = await api.post(`/expediente/${form.folio}/upload`, {
+        tipo, base64, mimetype, filename,
+      });
+      return r?.path || null;
+    } catch (err) {
+      console.warn(`Expediente upload (${tipo}) falló — se guardará inline:`, err);
+      return null;
+    }
+  };
+
+  /* OCR call — el server devuelve JSON estructurado limpio
+   * ({nombres, apellidoPaterno, curp, calle, numeroExterior, colonia, ...}),
+   * por lo que NO se aplica regex sobre el string del JSON: eso es la causa
+   * del bug donde el auto-llenado se pisaba con campos vacíos. */
   const processDoc = async (base64: string, field: string, type: 'ine' | 'curp' | 'comprobante') => {
     setOcrLoading(p => ({ ...p, [field]: true }));
     setOcrVerified(p => ({ ...p, [field]: false }));
@@ -577,59 +613,49 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
     try {
       const data = await api.post('/ocr', { image: base64, docType: type });
 
-      // Extract address data using our utilities if this is INE or Comprobante
-      let extractedData = { ...data };
-
-      if (type === 'ine') {
-        const ineData = extractINEData(JSON.stringify(data));
-        extractedData = { ...extractedData, ...ineData };
-      } else if (type === 'comprobante') {
-        const comprobanteData = extractComprobanteData(JSON.stringify(data));
-        extractedData = { ...extractedData, ...comprobanteData };
-
-        // Auto-populate coordinates if extracted from Comprobante
-        if (comprobanteData.latitud && comprobanteData.longitud) {
-          extractedData.coordenadas = `${comprobanteData.latitud}, ${comprobanteData.longitud}`;
-        }
-
-        // Compare addresses if we have both INE and Comprobante data
-        if (form.ineFrente && form.calle) {
-          const ineAddr: AddressComponents = {
-            calle: form.calle || '',
-            numero: form.numeroExterior || '',
-            colonia: form.colonia || '',
-            municipio: form.ciudad || '',
-            estado: form.delegacion || '',
-            codigoPostal: form.codigoPostal || '',
-          };
-          const comprobanteAddr: AddressComponents = {
-            calle: comprobanteData.calle || '',
-            numero: comprobanteData.numero || '',
-            colonia: comprobanteData.colonia || '',
-            municipio: comprobanteData.municipio || '',
-            estado: comprobanteData.estado || '',
-            codigoPostal: comprobanteData.codigoPostal || '',
-          };
-
-          const comparison = compareAddresses(ineAddr, comprobanteAddr);
-          setAddressMatch(comparison);
-        }
+      // Si el comprobante trae lat/lng, popular coordenadas para el mapa.
+      if (type === 'comprobante' && data.latitud && data.longitud) {
+        data.coordenadas = `${data.latitud}, ${data.longitud}`;
       }
 
-      // Patch: only spread non-empty string values so existing fields aren't wiped
+      // Comparar dirección INE vs comprobante cuando ya tenemos ambos datos.
+      if (type === 'comprobante' && form.calle) {
+        const ineAddr: AddressComponents = {
+          calle:        form.calle || '',
+          numero:       form.numeroExterior || '',
+          colonia:      form.colonia || '',
+          municipio:    form.ciudad || '',
+          estado:       form.delegacion || '',
+          codigoPostal: form.codigoPostal || '',
+        };
+        const comprobanteAddr: AddressComponents = {
+          calle:        data.calle || '',
+          numero:       data.numeroExterior || data.numero || '',
+          colonia:      data.colonia || '',
+          municipio:    data.ciudad || data.municipio || '',
+          estado:       data.delegacion || data.estado || '',
+          codigoPostal: data.codigoPostal || '',
+        };
+        setAddressMatch(compareAddresses(ineAddr, comprobanteAddr));
+      }
+
+      // Patch: solo campos no vacíos para no pisar lo que el usuario ya escribió.
       const patch: Partial<CustomerCaptureData> = {};
-      for (const [k, v] of Object.entries(extractedData)) {
+      for (const [k, v] of Object.entries(data)) {
         if (v !== '' && v !== null && v !== undefined) {
           (patch as any)[k] = v;
         }
       }
       updateForm(patch);
       setOcrVerified(p => ({ ...p, [field]: true }));
-      // Auto-dismiss verification badge after 8s
       setTimeout(() => setOcrVerified(p => ({ ...p, [field]: false })), 8000);
     } catch (err: any) {
       const msg = err?.message || 'Error al procesar el documento';
-      setOcrError(msg.includes('No hay proveedores') ? 'Clave Gemini no configurada — completa el formulario manualmente.' : `OCR: ${msg}`);
+      setOcrError(
+        msg.includes('No hay proveedores')
+          ? 'Sin clave de IA configurada — completa el formulario manualmente.'
+          : `OCR: ${msg}`
+      );
       setTimeout(() => setOcrError(''), 7000);
     } finally {
       setOcrLoading(p => ({ ...p, [field]: false }));
@@ -638,18 +664,28 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
 
   const handleIneFrente = (base64: string) => {
     updateForm({ ineFrente: base64 });
+    // Upload inmediato al expediente (no bloquea la UI; OCR corre en paralelo).
+    uploadToExpediente('ine_frente', base64, detectMime(base64))
+      .then(p => { if (p) updateForm({ ineFrentePath: p }); });
     processDoc(base64, 'ineFrente', 'ine');
   };
   const handleIneReverso = (base64: string) => {
     updateForm({ ineReverso: base64 });
-    // reverso usually has folio
+    uploadToExpediente('ine_reverso', base64, detectMime(base64))
+      .then(p => { if (p) updateForm({ ineReversoPath: p }); });
+    // reverso suele traer el folio: corre OCR para extraerlo.
+    processDoc(base64, 'ineReverso', 'ine');
   };
   const handleCurp = (base64: string) => {
     updateForm({ curpDoc: base64 });
+    uploadToExpediente('curp', base64, detectMime(base64, 'application/pdf'))
+      .then(p => { if (p) updateForm({ curpDocPath: p }); });
     processDoc(base64, 'curpDoc', 'curp');
   };
   const handleComprobante = (base64: string) => {
     updateForm({ comprobanteDomicilio: base64 });
+    uploadToExpediente('comprobante', base64, detectMime(base64))
+      .then(p => { if (p) updateForm({ comprobantePath: p }); });
     processDoc(base64, 'comprobante', 'comprobante');
   };
 

@@ -611,6 +611,16 @@ async function startServer() {
       const { folio, estado, paqueteNombre, nombres, telefonoTitular, rentaMensual, ...data } = req.body;
       const isUpdate = !!mockDb.ventas.find(v => v.folio === folio);
 
+      // Si el frontend ya subió los archivos al expediente y nos pasó los paths,
+      // tiramos los base64 inline para no duplicar (el JSON crecía decenas de MB
+      // por cada venta). Las claves *Path son la fuente de verdad ahora.
+      if (data.ineFrentePath)        delete data.ineFrente;
+      if (data.ineReversoPath)       delete data.ineReverso;
+      if (data.curpDocPath)          delete data.curpDoc;
+      if (data.comprobantePath)      delete data.comprobanteDomicilio;
+      if (data.videoFirmaPath)       delete data.videoFirmaBlob;
+      if (data.audioValidacionPath)  delete data.audioValidacion;
+
       if (isDbConnected) {
         await pool.query(
           "INSERT INTO ventas (folio, estado, paquete_nombre, nombres, telefono, renta_mensual, data) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (folio) DO UPDATE SET estado = EXCLUDED.estado",
@@ -1283,6 +1293,182 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
       res.status(500).json({ error: error.message || "Error processing document" });
     }
   });
+
+  // ================= EXPEDIENTES (PDFs · Audios · Videos) =================
+  // Estructura física en disco:
+  //   uploads/expedientes/{folio}/
+  //     ├── documentos/   (INE frente/reverso, CURP, comprobante de domicilio)
+  //     ├── audios/       (grabaciones de llamadas de validación)
+  //     └── videos/       (video-firmas)
+  //
+  // Pipeline: el frontend manda base64 vía JSON al endpoint de upload, el server
+  // decodifica y guarda al disco. Devuelve el path relativo. Cuando se finaliza
+  // la venta (POST /api/ventas), se prefiere el path sobre el base64 — los
+  // archivos pesados ya no se duplican dentro del JSON de la venta.
+  const UPLOADS_ROOT = path.join(process.cwd(), 'uploads', 'expedientes');
+  if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+
+  type ExpedienteTipo =
+    | 'ine_frente' | 'ine_reverso' | 'curp' | 'comprobante'
+    | 'audio_validacion' | 'videofirma';
+
+  const TIPO_TO_SUBFOLDER: Record<ExpedienteTipo, string> = {
+    ine_frente:       'documentos',
+    ine_reverso:      'documentos',
+    curp:             'documentos',
+    comprobante:      'documentos',
+    audio_validacion: 'audios',
+    videofirma:       'videos',
+  };
+
+  const mimeToExt = (mt: string): string => {
+    const m = mt.toLowerCase();
+    if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
+    if (m === 'image/png')  return 'png';
+    if (m === 'image/webp') return 'webp';
+    if (m === 'image/gif')  return 'gif';
+    if (m === 'application/pdf') return 'pdf';
+    if (m === 'audio/webm') return 'webm';
+    if (m === 'audio/ogg')  return 'ogg';
+    if (m === 'audio/mpeg' || m === 'audio/mp3') return 'mp3';
+    if (m === 'audio/wav')  return 'wav';
+    if (m === 'video/webm') return 'webm';
+    if (m === 'video/mp4')  return 'mp4';
+    return 'bin';
+  };
+
+  // Sanitiza folio para usarlo como nombre de carpeta (path traversal safe).
+  const safeFolio = (folio: string): string =>
+    String(folio || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+
+  // Body parser dedicado con límite alto solo para uploads de expediente.
+  // (videos webm de 60s pueden pesar 10-30 MB en base64.)
+  const expedienteUploadJson = express.json({ limit: '50mb' });
+
+  // POST /api/expediente/:folio/upload — guarda un archivo en su subcarpeta.
+  // Body: { tipo, base64, mimetype, filename? }
+  app.post('/api/expediente/:folio/upload', expedienteUploadJson, async (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      if (!folio) return res.status(400).json({ error: 'Folio inválido' });
+
+      const { tipo, base64, mimetype, filename } = req.body as {
+        tipo: ExpedienteTipo; base64: string; mimetype: string; filename?: string;
+      };
+      if (!tipo || !base64 || !mimetype) {
+        return res.status(400).json({ error: 'Faltan campos: tipo, base64, mimetype' });
+      }
+      const subfolder = TIPO_TO_SUBFOLDER[tipo];
+      if (!subfolder) {
+        return res.status(400).json({
+          error: `Tipo inválido: ${tipo}. Permitidos: ${Object.keys(TIPO_TO_SUBFOLDER).join(', ')}`
+        });
+      }
+
+      const dir = path.join(UPLOADS_ROOT, folio, subfolder);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+      const ext = mimeToExt(mimetype);
+      // Documentos: nombre estable (ine_frente.jpg) — sobreescribe si recapturan.
+      // Audios/videos: timestamp para conservar histórico de intentos de grabación.
+      const isHistoric = subfolder === 'audios' || subfolder === 'videos';
+      const safeFilename = filename
+        ? filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80)
+        : isHistoric
+          ? `${tipo}_${Date.now()}.${ext}`
+          : `${tipo}.${ext}`;
+      const fullPath = path.join(dir, safeFilename);
+
+      // Decodifica base64 (admite data-URL completa o solo el cuerpo).
+      const cleanB64 = base64.includes(',') ? base64.split(',')[1] : base64;
+      const buf = Buffer.from(cleanB64, 'base64');
+      // Hard cap por archivo: 50 MB (después del decode, no del base64).
+      if (buf.length > 50 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Archivo > 50 MB no permitido' });
+      }
+      fs.writeFileSync(fullPath, buf);
+
+      const relativePath = `/uploads/expedientes/${folio}/${subfolder}/${safeFilename}`;
+
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'subir_archivo_expediente', 'expedientes', {
+        folio, tipo, path: relativePath, size: buf.length, mimetype,
+      });
+
+      res.json({ path: relativePath, size: buf.length, tipo, folio });
+    } catch (e: any) {
+      console.error('Expediente upload error:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/expediente/:folio/files — lista archivos del expediente.
+  app.get('/api/expediente/:folio/files', (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const baseDir = path.join(UPLOADS_ROOT, folio);
+      if (!fs.existsSync(baseDir)) return res.json({ folio, files: [] });
+
+      type FileEntry = {
+        subfolder: string; filename: string; path: string; size: number; mtime: string;
+      };
+      const result: FileEntry[] = [];
+      for (const sub of ['documentos', 'audios', 'videos']) {
+        const subDir = path.join(baseDir, sub);
+        if (!fs.existsSync(subDir)) continue;
+        for (const fname of fs.readdirSync(subDir)) {
+          const full = path.join(subDir, fname);
+          const stat = fs.statSync(full);
+          if (!stat.isFile()) continue;
+          result.push({
+            subfolder: sub,
+            filename: fname,
+            path: `/uploads/expedientes/${folio}/${sub}/${fname}`,
+            size: stat.size,
+            mtime: stat.mtime.toISOString(),
+          });
+        }
+      }
+      res.json({ folio, files: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/expediente/:folio/file — elimina un archivo (solo gerente/admin).
+  app.delete('/api/expediente/:folio/file', requireRole('gerente', 'administracion'), (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const { subfolder, filename } = req.body as { subfolder: string; filename: string };
+      if (!subfolder || !filename) return res.status(400).json({ error: 'subfolder y filename requeridos' });
+      // Evita path traversal: subfolder solo puede ser una de las 3 carpetas conocidas.
+      if (!['documentos', 'audios', 'videos'].includes(subfolder)) {
+        return res.status(400).json({ error: 'subfolder inválido' });
+      }
+      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const full = path.join(UPLOADS_ROOT, folio, subfolder, safeName);
+      if (!fs.existsSync(full)) return res.status(404).json({ error: 'Archivo no encontrado' });
+      fs.unlinkSync(full);
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'eliminar_archivo_expediente', 'expedientes',
+        { folio, subfolder, filename: safeName });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Servir archivos estáticos /uploads/expedientes/* — autenticado vía Bearer
+  // header O ?token=... (los <img>/<audio>/<video> no envían Authorization).
+  const expedienteStaticAuth = (req: any, res: any, next: any) => {
+    const token = (req.headers?.authorization || '').replace('Bearer ', '')
+                  || String(req.query?.token || '');
+    if (!token) return res.status(401).send('No autenticado');
+    const sess = sessionStore.get(token);
+    if (!sess || Date.now() > sess.exp) return res.status(401).send('Sesión expirada');
+    next();
+  };
+  app.use('/uploads/expedientes', expedienteStaticAuth, express.static(UPLOADS_ROOT));
 
   // ================= ADMIN: USUARIOS =================
 
@@ -3492,6 +3678,7 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
   app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
   app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini
+  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads de expediente (INE, video, audio)
   app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
   app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
   app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
