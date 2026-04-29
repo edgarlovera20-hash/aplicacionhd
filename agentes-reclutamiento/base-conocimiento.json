@@ -1,0 +1,175 @@
+{
+  "agente": {
+    "nombre": "HD-Bot Reclutamiento",
+    "empresa": "Heavenly Dreams",
+    "version": "1.0.0",
+    "ultima_actualizacion": "2026-04-28",
+    "owner": "Gisselle Arenas",
+    "canales": ["whatsapp_qr", "facebook_messenger"]
+  },
+  "empresa": {
+    "nombre_comercial": "Heavenly Dreams",
+    "giro": "Promotor autorizado Telmex / Infinitum",
+    "zona_operacion": "Ciudad de México y área metropolitana",
+    "mision": "Llevar internet de alta velocidad a más hogares mexicanos con servicio cercano y honesto.",
+    "sistema_validacion": "PISA (Telmex)",
+    "sitio_web": "",
+    "redes_sociales": {
+      "facebook": "",
+      "instagram": "",
+      "tiktok": ""
+    }
+  },
+  "vacante": {
+    "id": "asesor-ventas-telmex",
+    "puesto": "Asesor / Asesora de Ventas Telmex",
+    "sueldo_base": null,
+    "esquema": "100% comisiones + bonos",
+    "comisiones": {
+      "por_venta_posteada": "PENDIENTE_DEFINIR",
+      "bonos_productividad": "PENDIENTE_DEFINIR",
+      "ingreso_promedio_mensual": "PENDIENTE_DEFINIR"
+    },
+    "horario": {
+      "dias": "Lunes a Sábado",
+      "hora_entrada": "09:00",
+      "hora_salida": "18:00"
+    },
+    "modalidad": "Presencial / trabajo de campo",
+    "capacitacion": {
+      "duracion_dias": null,
+      "pagada": null
+    },
+    "plan_carrera": ["Asesor", "Supervisor", "Gerente de zona"],
+    "requisitos_indispensables": [
+      "Edad 18 a 45 años",
+      "Secundaria terminada",
+      "Disponibilidad tiempo completo",
+      "Buena presentación"
+    ],
+    "documentos_alta": [
+      "INE vigente",
+      "CURP",
+      "Comprobante de domicilio (no mayor a 3 meses)",
+      "Acta de nacimiento"
+    ],
+    "equipo_entregado": [
+      "Credencial",
+      "Uniforme",
+      "Tablet con app de captura",
+      "INE digital de promotor autorizado"
+    ]
+  },
+  "preguntas_filtro": [
+    { "orden": 1, "pregunta": "¿Cuál es tu nombre completo?", "campo": "nombre" },
+    { "orden": 2, "pregunta": "¿Qué edad tienes?", "campo": "edad", "validacion": "18-45" },
+    { "orden": 3, "pregunta": "¿En qué alcaldía o municipio vives?", "campo": "ubicacion" },
+    { "orden": 4, "pregunta": "¿Tienes disponibilidad de tiempo completo (L-S, 9 a 6)?", "campo": "disponibilidad", "validacion": "si" },
+    { "orden": 5, "pregunta": "¿Tienes experiencia en ventas o atención al cliente?", "campo": "experiencia", "obligatorio": false }
+  ],
+  "faq": [
+    {
+      "pregunta": "¿Es por comisión pura?",
+      "respuesta": "Sí, manejamos esquema 100% comisión con bonos por productividad. Nuestros mejores asesores ganan ingresos competitivos sin tope.",
+      "tags": ["sueldo", "comision"]
+    },
+    {
+      "pregunta": "¿Pagan capacitación?",
+      "respuesta": "PENDIENTE_DEFINIR",
+      "tags": ["capacitacion"]
+    },
+    {
+      "pregunta": "¿Dan equipo de trabajo?",
+      "respuesta": "Sí, te entregamos credencial, uniforme, tablet con la app de captura e INE digital de promotor autorizado Telmex.",
+      "tags": ["equipo", "uniforme"]
+    },
+    {
+      "pregunta": "¿Cuánto dura el proceso?",
+      "respuesta": "Entrevista + capacitación. En menos de una semana puedes estar vendiendo.",
+      "tags": ["proceso", "tiempo"]
+    },
+    {
+      "pregunta": "¿Puedo trabajar medio tiempo?",
+      "respuesta": "No, esta vacante requiere disponibilidad de tiempo completo.",
+      "tags": ["horario", "medio_tiempo"]
+    },
+    {
+      "pregunta": "¿Necesito experiencia previa?",
+      "respuesta": "No es indispensable. Damos capacitación completa. Lo importante es la actitud y disposición para aprender.",
+      "tags": ["experiencia"]
+    },
+    {
+      "pregunta": "¿Qué zona me toca?",
+      "respuesta": "Te asignamos una zona en CDMX cercana a tu domicilio cuando seas contratado.",
+      "tags": ["zona", "ubicacion"]
+    }
+  ],
+  "objeciones": [
+    {
+      "objecion": "Está muy lejos",
+      "respuesta": "Entiendo. Tenemos asesores en varias zonas de CDMX. ¿En qué colonia vives? Puedo ver si tenemos equipo cerca de ti."
+    },
+    {
+      "objecion": "El sueldo es bajo / no hay base",
+      "respuesta": "Es esquema de comisiones, pero las comisiones son altas. Un asesor promedio postea varias ventas por semana, lo que se traduce en ingresos competitivos sin tope máximo."
+    },
+    {
+      "objecion": "No tengo experiencia",
+      "respuesta": "¡Justo eso buscamos! Te capacitamos desde cero. La mayoría de nuestros mejores vendedores empezaron sin experiencia previa."
+    },
+    {
+      "objecion": "Mejor lo pienso",
+      "respuesta": "Claro, sin problema. ¿Qué duda específica te quedó? Estoy aquí para resolverla. ¿Te parece si agendamos una entrevista informativa sin compromiso?"
+    },
+    {
+      "objecion": "Ya tengo otro trabajo",
+      "respuesta": "Entiendo. ¿Estás buscando un cambio o un ingreso extra? Algunos asesores combinan, otros migran a tiempo completo cuando ven el ingreso que generan."
+    }
+  ],
+  "links": {
+    "folleto_vacante": "",
+    "video_institucional": "",
+    "ubicacion_oficinas_maps": "",
+    "calendario_entrevistas": "",
+    "formulario_pre_registro": ""
+  },
+  "glosario": {
+    "VT": "Folio de venta (ej. VT-1234567890)",
+    "Posteada": "Venta confirmada en PISA (Telmex)",
+    "PISA": "Sistema interno de Telmex para validación de ventas",
+    "Domiciliada": "Pago automático con tarjeta — da 6 meses streaming gratis",
+    "INE": "Identificación oficial del cliente",
+    "CURP": "Clave Única de Registro de Población",
+    "Comprobante": "Comprobante de domicilio del cliente"
+  },
+  "flujo_seguimiento": {
+    "recordatorio_24h": "¡Hola {nombre}! Te recuerdo tu entrevista mañana {fecha} a las {hora} en {direccion}. Lleva INE y CV impreso. ¿Confirmas asistencia? ✅",
+    "recordatorio_2h": "¡{nombre}! Te esperamos en 2 horas. ¿Necesitas la ubicación de nuevo? 📍",
+    "no_asistio": "Lamentamos no verte hoy. Si sigue interesado, podemos agendar otro día. ¡Saludos!",
+    "max_reagendas": 1
+  },
+  "etiquetas_crm": [
+    "agendado",
+    "descartado",
+    "no_contesta",
+    "contratado",
+    "reagendado",
+    "asistio",
+    "no_asistio",
+    "escalamiento_humano"
+  ],
+  "reglas_duras": [
+    "Nunca prometer sueldo base si no existe",
+    "Nunca dar dirección exacta de oficinas a candidato no filtrado",
+    "Nunca compartir datos de otros candidatos",
+    "Nunca insistir más de 2 veces tras un no",
+    "Siempre escalar a Gisselle si piden hablar con persona real",
+    "Siempre responder en menos de 5 minutos en horario laboral"
+  ],
+  "ejemplos_few_shot": [],
+  "metricas_objetivo": {
+    "conversion_contacto_a_entrevista_pct": 30,
+    "asistencia_entrevista_pct": 70,
+    "tiempo_respuesta_minutos": 5
+  }
+}
