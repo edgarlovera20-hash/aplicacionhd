@@ -2,6 +2,8 @@ import express from "express";
 import path from "path";
 import crypto from "crypto";
 import fs from "fs";
+import helmet from "helmet";
+import compression from "compression";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
 import dotenv from "dotenv";
@@ -11,10 +13,40 @@ const { Pool } = pkg;
 
 dotenv.config();
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// ── Validación de entorno crítico (fail-fast en producción) ───────────────────
+if (IS_PROD) {
+  const required = ["PASSWORD_SALT"];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.error(`[FATAL] Faltan variables de entorno requeridas en producción: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+  if (!process.env.DATABASE_URL) {
+    console.warn("[WARN] DATABASE_URL no está definida — la app correrá con MockDB (no persistente).");
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3001', 10);
 
+  // Railway/Render/Heroku están detrás de un proxy — confiamos solo en el primero
+  // para que req.ip / X-Forwarded-For funcione correctamente con rate limiting.
+  app.set("trust proxy", 1);
+
+  // ── Seguridad: cabeceras + compresión ─────────────────────────────────────
+  app.use(
+    helmet({
+      // CSP deshabilitado: la app embebe scripts inline (Vite dev) y conecta a
+      // dominios externos (Gemini, OpenAI, Twilio). Si se quiere endurecer, hay
+      // que listar todos los origins permitidos. Por ahora solo otras cabeceras.
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+  app.use(compression());
   app.use(express.json({ limit: '10mb' }));
 
   // ── Proveedor IA: Gemini (2 claves) → OpenAI (fallback final) ─────────────
@@ -2726,12 +2758,44 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     res.send("﻿" + csv);
   });
 
-  // ================= HEALTH CHECK =================
-  app.get("/health", (_req, res) => {
-    res.json({
-      status: "ok",
+  // ================= HEALTH CHECKS =================
+  // Liveness — siempre responde si el proceso está vivo (Railway/Render lo usan
+  // para detectar crashes; debe ser barato).
+  app.get("/health/live", (_req, res) => {
+    res.json({ status: "ok", ts: new Date().toISOString() });
+  });
+
+  // Readiness — verifica DB y devuelve 503 si la app no puede servir tráfico.
+  app.get("/health/ready", async (_req, res) => {
+    let dbOk = false;
+    if (isDbConnected) {
+      try {
+        await pool.query("SELECT 1");
+        dbOk = true;
+      } catch {
+        dbOk = false;
+      }
+    }
+    const status = dbOk || !isDbConnected ? "ok" : "degraded";
+    res.status(dbOk || !isDbConnected ? 200 : 503).json({
+      status,
       env: process.env.NODE_ENV || "development",
-      db: isDbConnected ? "postgres" : "mock",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      ts: new Date().toISOString(),
+    });
+  });
+
+  // Backwards compatibility — Railway usa /health por default según railway.json.
+  app.get("/health", async (_req, res) => {
+    let dbOk = !isDbConnected;
+    if (isDbConnected) {
+      try { await pool.query("SELECT 1"); dbOk = true; } catch { dbOk = false; }
+    }
+    res.status(dbOk ? 200 : 503).json({
+      status: dbOk ? "ok" : "degraded",
+      env: process.env.NODE_ENV || "development",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      uptime: Math.round(process.uptime()),
       ts: new Date().toISOString(),
     });
   });
@@ -3344,8 +3408,18 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // ═══════════════════════════════════════════════════════════════════════════
   //  ADMIN: aplicar RBAC a rutas sensibles
   // ═══════════════════════════════════════════════════════════════════════════
-  // Rate-limit al endpoint de login
-  app.use('/api/auth/login', rateLimit(10, 60_000));
+  // Rate-limits — protegen endpoints que invocan IA, OCR o tocan datos críticos.
+  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
+  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
+  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
+  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini
+  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
+  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
+  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
+  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
+  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
+  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
+  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
 
   // ================= VITE MIDDLEWARE (dev) / STATIC (prod) =================
   if (process.env.NODE_ENV !== "production") {
@@ -3366,12 +3440,60 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // Bootstrap WhatsApp engine (detects whatsapp-web.js or runs in stub mode)
   whatsappEngine.init().catch(err => console.warn('[WA Engine] init error:', err));
 
-  app.listen(PORT, "0.0.0.0", () => {
+  // 404 JSON para rutas /api desconocidas (mejor que devolver el index.html)
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Endpoint no encontrado' });
+  });
+
+  // Error handler global — última línea antes de que Express devuelva 500 sin contexto
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    console.error('[ERROR]', err?.stack || err?.message || err);
+    if (res.headersSent) return;
+    res.status(500).json({
+      error: IS_PROD ? 'Error interno del servidor' : (err?.message || 'Error desconocido'),
+    });
+  });
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`\nHeavenly Dreams CRM — ${process.env.NODE_ENV || 'development'} mode`);
     console.log(`   -> http://localhost:${PORT}`);
     console.log(`   -> DB: ${isDbConnected ? 'PostgreSQL' : 'Mock DB'}\n`);
     console.log(`   -> Agent registry: 6 system + recruitmentAgents (WA mode: ${whatsappEngine.getMode()})\n`);
   });
+
+  // ── Graceful shutdown ─────────────────────────────────────────────────────
+  // Railway envía SIGTERM antes de matar el contenedor; queremos cerrar
+  // conexiones abiertas (HTTP, DB, SSE) limpiamente para no perder requests
+  // en vuelo.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[${signal}] Cerrando servidor...`);
+    const forceExit = setTimeout(() => {
+      console.error('[SHUTDOWN] Timeout de 10s — forzando salida.');
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+    server.close(async () => {
+      try { await pool.end(); } catch {}
+      console.log('[SHUTDOWN] HTTP y DB cerrados. Bye.');
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
+
+  // No queremos que un error no manejado tire el proceso silenciosamente.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection]', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[uncaughtException]', err);
+  });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[FATAL] No se pudo iniciar el servidor:', err);
+  process.exit(1);
+});

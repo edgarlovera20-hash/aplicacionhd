@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig(({ mode }) => {
   loadEnv(mode, '.', '');
+  const isProd = mode === 'production';
   return {
     plugins: [react(), tailwindcss()],
     base: './',
@@ -16,6 +17,23 @@ export default defineConfig(({ mode }) => {
       outDir: 'build',
       emptyOutDir: true,
       chunkSizeWarningLimit: 600,
+      // Sourcemaps off in prod — añaden ~4-6 MB y exponen el código fuente.
+      // Si necesitas debuggear errores en prod, súbelos a Sentry/Datadog.
+      sourcemap: !isProd,
+      // Terser produce builds 10-15% más chicos que esbuild y permite drop_console.
+      minify: isProd ? 'terser' : 'esbuild',
+      terserOptions: isProd
+        ? {
+            compress: {
+              drop_console: true,    // quita console.log de cliente en prod
+              drop_debugger: true,
+              passes: 2,
+            },
+            format: { comments: false },
+          }
+        : undefined,
+      cssMinify: isProd,
+      reportCompressedSize: false,   // acelera el build ~30%
       rollupOptions: {
         output: {
           manualChunks(id) {
