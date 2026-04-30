@@ -20,11 +20,14 @@ RUN npm run build
 # --platform=node: target Node.js (no browser)
 # --external:pg-native: excluir binarios nativos que no se pueden bundlear
 # --sourcemap: mapas de fuente para debugging en producción
+# --format=cjs + .cjs extension: evita conflicto con "type":"module" en package.json
+# Node.js trata .cjs siempre como CommonJS, independientemente del campo type
 RUN npx esbuild server.ts \
       --bundle \
       --platform=node \
       --target=node20 \
-      --outfile=dist/server.js \
+      --format=cjs \
+      --outfile=dist/server.cjs \
       --external:pg-native \
       --external:fsevents \
       --sourcemap
@@ -58,4 +61,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:3000/health || exit 1
 
 # Arrancar con node puro — sin tsx, sin compilación en runtime
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/server.cjs"]
