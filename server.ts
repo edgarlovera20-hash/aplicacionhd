@@ -42,26 +42,11 @@ async function startServer() {
   // ── Seguridad: cabeceras + compresión ─────────────────────────────────────
   app.use(
     helmet({
-      // En dev: CSP deshabilitado (Vite inyecta scripts inline).
-      // En producción: habilitado con política estricta.
-      contentSecurityPolicy: IS_PROD ? {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc:  ["'self'"],
-          styleSrc:   ["'self'", "'unsafe-inline'"],  // Tailwind inline styles
-          imgSrc:     ["'self'", "data:", "blob:"],
-          connectSrc: ["'self'",
-            "https://generativelanguage.googleapis.com",
-            "https://api.openai.com",
-            "https://api.anthropic.com",
-            "https://api.twilio.com",
-          ],
-          fontSrc:    ["'self'"],
-          objectSrc:  ["'none'"],
-          frameSrc:   ["'none'"],
-          upgradeInsecureRequests: null, // Deshabilitado: sin HTTPS todavía. Habilitar al agregar Caddy/TLS.
-        },
-      } : false,
+      // CSP y HSTS deshabilitados hasta configurar HTTPS/TLS (Caddy).
+      // Con HTTP puro, HSTS rompe el browser y CSP bloquea assets.
+      // TODO: re-habilitar cuando se agregue dominio + certificado SSL.
+      contentSecurityPolicy: false,
+      strictTransportSecurity: false,
       crossOriginEmbedderPolicy: false,
     })
   );
