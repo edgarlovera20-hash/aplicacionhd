@@ -21,11 +21,6 @@ npm-debug.log*
 
 # Base de datos simulada local
 .mockdb.json
-.mockdb.json.bak
-
-# Expedientes — archivos de clientes (INE, comprobantes, audios, video-firmas)
-# NUNCA subir a git: contiene PII de clientes y peso pesado.
-uploads/
 
 # Expedientes — archivos de clientes (INE, comprobantes, audios, video-firmas)
 # NUNCA subir a git: contiene PII de clientes y peso pesado.
