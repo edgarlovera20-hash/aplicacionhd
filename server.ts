@@ -5,6 +5,7 @@ import fs from "fs";
 import helmet from "helmet";
 import compression from "compression";
 import bcrypt from "bcryptjs";
+import { Mutex } from "async-mutex";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
@@ -490,8 +491,20 @@ async function startServer() {
       ],
     };
   };
-  const saveMockDb = (db: MockDB) => {
-    try { fs.writeFileSync(MOCK_DB_FILE, JSON.stringify(db, null, 2)); } catch {}
+  // Mutex para serializar escrituras al MockDB — evita race conditions cuando
+  // múltiples requests modifican el JSON simultáneamente.
+  const dbMutex = new Mutex();
+
+  const saveMockDb = (db: MockDB): void => {
+    // Fire-and-forget con mutex: serializa las escrituras sin bloquear el
+    // event loop (usa fs.promises internamente).
+    dbMutex.runExclusive(async () => {
+      try {
+        await fs.promises.writeFile(MOCK_DB_FILE, JSON.stringify(db, null, 2));
+      } catch (err) {
+        console.error("[MockDB] Error escribiendo .mockdb.json:", err);
+      }
+    }).catch(() => {}); // la promesa de runExclusive no se puede perder
   };
 
   const mockDb = loadMockDb();
@@ -567,34 +580,13 @@ async function startServer() {
   };
 
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        uid VARCHAR(255) UNIQUE,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        usuario VARCHAR(255) UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
-        role VARCHAR(50) DEFAULT 'asesor',
-        nombres VARCHAR(255),
-        apellidos VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS ventas (
-        folio VARCHAR(255) PRIMARY KEY,
-        estado VARCHAR(50) DEFAULT 'pendiente',
-        paquete_nombre VARCHAR(255),
-        nombres VARCHAR(255),
-        telefono VARCHAR(50),
-        renta_mensual NUMERIC,
-        data JSONB,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log("Database initialized successfully.");
+    // Ejecutar migraciones versionadas antes de arrancar las rutas
+    const { runMigrations } = await import('./migrations/migrate.js');
+    await runMigrations(pool);
+    console.log("[DB] PostgreSQL listo.");
     isDbConnected = true;
-  } catch (err) {
-    console.warn("No se pudo conectar a PostgreSQL. Usando Mock DB.");
+  } catch (err: any) {
+    console.warn(`[DB] No se pudo conectar a PostgreSQL (${err?.message ?? err}). Usando Mock DB.`);
   }
 
   // ================= API ROUTES (Auth & CRM) =================
@@ -1612,7 +1604,12 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   app.patch("/api/admin/expenses/:id", (req, res) => {
     const e = (mockDb.expenses || []).find(x => x.id === req.params.id);
     if (!e) return res.status(404).json({ error: "Gasto no encontrado" });
-    Object.assign(e, req.body);
+    // Allowlist: solo campos editables (id, userId, createdAt son inmutables)
+    const { amount, category, description, date } = req.body;
+    if (amount    !== undefined) e.amount      = amount;
+    if (category  !== undefined) e.category    = category;
+    if (description !== undefined) e.description = description;
+    if (date      !== undefined) e.date        = date;
     saveMockDb(mockDb);
     res.json(e);
   });
@@ -2757,7 +2754,29 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
   app.patch("/api/seguimiento/clientes/:id", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     const c = (mockDb.clientesSeguimiento || []).find(x => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: "Cliente no encontrado" });
-    Object.assign(c, req.body);
+    // Allowlist: id, folio, agente_id, agente_nombre, supervisor_id, fecha_alta son inmutables
+    const {
+      nombre, telefono, email, paquete, renta, megas,
+      estado_pago, fecha_ultimo_pago,
+      beneficio_activado, domiciliado,
+      colonia, municipio, notas,
+      mensajes_sin_leer, ultimo_contacto,
+    } = req.body;
+    if (nombre           !== undefined) c.nombre            = nombre;
+    if (telefono         !== undefined) c.telefono          = telefono;
+    if (email            !== undefined) c.email             = email;
+    if (paquete          !== undefined) c.paquete           = paquete;
+    if (renta            !== undefined) c.renta             = renta;
+    if (megas            !== undefined) c.megas             = megas;
+    if (estado_pago      !== undefined) c.estado_pago       = estado_pago;
+    if (fecha_ultimo_pago !== undefined) c.fecha_ultimo_pago = fecha_ultimo_pago;
+    if (beneficio_activado !== undefined) c.beneficio_activado = beneficio_activado;
+    if (domiciliado      !== undefined) c.domiciliado       = domiciliado;
+    if (colonia          !== undefined) c.colonia           = colonia;
+    if (municipio        !== undefined) c.municipio         = municipio;
+    if (notas            !== undefined) c.notas             = notas;
+    if (mensajes_sin_leer !== undefined) c.mensajes_sin_leer = mensajes_sin_leer;
+    if (ultimo_contacto  !== undefined) c.ultimo_contacto   = ultimo_contacto;
     saveMockDb(mockDb);
     res.json(c);
   });
@@ -2914,8 +2933,14 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
   app.patch("/api/seguimiento/tickets/:id", (req, res) => {
     const t = (mockDb.ticketsSoporte || []).find(x => x.id === req.params.id);
     if (!t) return res.status(404).json({ error: "Ticket no encontrado" });
-    Object.assign(t, req.body);
-    if (req.body.estado === "resuelto" || req.body.estado === "cerrado") {
+    // Allowlist: id, cliente_id, fecha_apertura son inmutables; fecha_cierre es auto-set
+    const { estado, prioridad, asunto, descripcion, agente_id } = req.body;
+    if (estado      !== undefined) t.estado      = estado;
+    if (prioridad   !== undefined) t.prioridad   = prioridad;
+    if (asunto      !== undefined) t.asunto      = asunto;
+    if (descripcion !== undefined) t.descripcion = descripcion;
+    if (agente_id   !== undefined) t.agente_id   = agente_id;
+    if (estado === "resuelto" || estado === "cerrado") {
       t.fecha_cierre = new Date().toISOString();
     }
     saveMockDb(mockDb);
@@ -3281,7 +3306,26 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   app.patch('/api/contracts/:id', (req, res) => {
     const c = (mockDb.contracts || []).find((x: Contract) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'Contrato no encontrado' });
-    Object.assign(c, req.body, { updatedAt: new Date().toISOString() });
+    // Allowlist: id, folio, cliente_nombre, cliente_telefono, fecha_inicio, createdAt son inmutables
+    const {
+      paquete, renta, megas, fecha_fin, meses_permanencia,
+      estado, portabilidad, domicilio, municipio, notas,
+      agente_id, agente_nombre, cliente_email,
+    } = req.body;
+    if (paquete           !== undefined) c.paquete           = paquete;
+    if (renta             !== undefined) c.renta             = renta;
+    if (megas             !== undefined) c.megas             = megas;
+    if (fecha_fin         !== undefined) c.fecha_fin         = fecha_fin;
+    if (meses_permanencia !== undefined) c.meses_permanencia = meses_permanencia;
+    if (estado            !== undefined) c.estado            = estado;
+    if (portabilidad      !== undefined) c.portabilidad      = portabilidad;
+    if (domicilio         !== undefined) c.domicilio         = domicilio;
+    if (municipio         !== undefined) c.municipio         = municipio;
+    if (notas             !== undefined) c.notas             = notas;
+    if (agente_id         !== undefined) c.agente_id         = agente_id;
+    if (agente_nombre     !== undefined) c.agente_nombre     = agente_nombre;
+    if (cliente_email     !== undefined) c.cliente_email     = cliente_email;
+    c.updatedAt = new Date().toISOString();
     saveMockDb(mockDb);
     res.json(c);
   });
@@ -3374,7 +3418,12 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
       req.body.fecha_pago = new Date().toISOString().split('T')[0];
       pushNotif('Pago registrado', `${inv.cliente_nombre} — $${inv.total}`, 'success', 'facturacion', { referencia_id: inv.id });
     }
-    Object.assign(inv, req.body);
+    // Allowlist: montos, cliente, fechas de emisión/vencimiento y agente_id son inmutables
+    const { estado, fecha_pago, notas, metodo_pago } = req.body;
+    if (estado      !== undefined) inv.estado      = estado;
+    if (fecha_pago  !== undefined) inv.fecha_pago  = fecha_pago;
+    if (notas       !== undefined) inv.notas       = notas;
+    if (metodo_pago !== undefined) inv.metodo_pago = metodo_pago;
     saveMockDb(mockDb); res.json(inv);
   });
 
@@ -3458,8 +3507,25 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   app.patch('/api/inventory/:id', (req, res) => {
     const item = (mockDb.inventory || []).find((x: InventoryItem) => x.id === req.params.id);
     if (!item) return res.status(404).json({ error: 'Item no encontrado' });
-    if (req.body.estado === 'asignado' && !item.fecha_asignacion) req.body.fecha_asignacion = new Date().toISOString().split('T')[0];
-    Object.assign(item, req.body);
+    // Allowlist: id, tipo, fecha_ingreso son inmutables
+    const {
+      descripcion, serie, numero, estado,
+      cliente_nombre, contrato_id, asignado_a,
+      talla, almacen, precio_costo, notas,
+    } = req.body;
+    if (descripcion   !== undefined) item.descripcion   = descripcion;
+    if (serie         !== undefined) item.serie         = serie;
+    if (numero        !== undefined) item.numero        = numero;
+    if (estado        !== undefined) item.estado        = estado;
+    if (cliente_nombre !== undefined) item.cliente_nombre = cliente_nombre;
+    if (contrato_id   !== undefined) item.contrato_id   = contrato_id;
+    if (asignado_a    !== undefined) item.asignado_a    = asignado_a;
+    if (talla         !== undefined) item.talla         = talla;
+    if (almacen       !== undefined) item.almacen       = almacen;
+    if (precio_costo  !== undefined) item.precio_costo  = precio_costo;
+    if (notas         !== undefined) item.notas         = notas;
+    if (estado === 'asignado' && !item.fecha_asignacion)
+      item.fecha_asignacion = new Date().toISOString().split('T')[0];
     saveMockDb(mockDb); res.json(item);
   });
 
@@ -3706,9 +3772,13 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     const adv = ((mockDb as any).advances || []).find((a: any) => a.id === req.params.id);
     if (!adv) return res.status(404).json({ error: 'No encontrado' });
     const prevEstado = adv.estado;
-    Object.assign(adv, req.body);
+    // Allowlist: id, agente_id, agente_nombre, monto, createdAt son inmutables
+    const { estado, fecha_pago, notas } = req.body;
+    if (estado     !== undefined) adv.estado     = estado;
+    if (fecha_pago !== undefined) adv.fecha_pago = fecha_pago;
+    if (notas      !== undefined) adv.notas      = notas;
     saveMockDb(mockDb);
-    if (req.body.estado === 'aprobado') pushNotif('Adelanto aprobado', `$${adv.monto} para ${adv.agente_nombre}`, 'success', 'nomina');
+    if (estado === 'aprobado') pushNotif('Adelanto aprobado', `$${adv.monto} para ${adv.agente_nombre}`, 'success', 'nomina');
 
     // Audit: gerente/admin autorizo o rechazo el pago.
     if (req.body.estado && req.body.estado !== prevEstado) {
