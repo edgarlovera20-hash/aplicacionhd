@@ -14,26 +14,10 @@ services:
         fromDatabase:
           name: hdreams-db
           property: connectionString
-      # ── IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
-      - key: ANTHROPIC_API_KEY
-        sync: false          # Configura en dashboard. Sin clave Claude no se usa Claude.
       - key: GEMINI_API_KEY
-        sync: false          # Fallback. Configura si quieres respaldo cuando Claude falle.
-      - key: GEMINI_API_KEY_2
-        sync: false          # Opcional: 2da clave Gemini para rotación de cuotas.
-      - key: OPENAI_API_KEY
-        sync: false          # Último recurso (solo texto). Opcional.
+        sync: false          # Se configura manualmente en el dashboard de Render
       - key: PASSWORD_SALT
         generateValue: true  # Render genera un valor aleatorio seguro automáticamente
-      # ── Twilio (SMS / WhatsApp / llamadas de validación) ──
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_FROM_NUMBER
-        sync: false
-      - key: TWILIO_WHATSAPP_FROM
-        sync: false
 
 # ── PostgreSQL Database ────────────────────────────────────────────────────
 databases:
