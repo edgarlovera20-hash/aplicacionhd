@@ -4,6 +4,7 @@ import crypto from "crypto";
 import fs from "fs";
 import helmet from "helmet";
 import compression from "compression";
+import bcrypt from "bcryptjs";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
@@ -231,8 +232,34 @@ async function startServer() {
   const geminiGenerate = aiGenerate;
 
   const SALT = process.env.PASSWORD_SALT || "hdreams_salt_2026";
-  const hashPassword = (password: string) =>
-    crypto.createHash("sha256").update(password + SALT).digest("hex");
+
+  /** Hash seguro de contraseña con bcrypt (12 rounds). */
+  const hashPassword = (password: string): Promise<string> =>
+    bcrypt.hash(password, 12);
+
+  /** Detecta si el hash es legacy SHA-256 (64 hex) vs bcrypt ($2b$...) */
+  const isLegacyHash = (hash: string) => /^[0-9a-f]{64}$/.test(hash);
+
+  /**
+   * Verifica contraseña con auto-migración SHA-256 → bcrypt.
+   * Devuelve { valid, newHash? } — si newHash está presente, hay que persistirlo.
+   */
+  const verifyPassword = async (
+    password: string,
+    storedHash: string
+  ): Promise<{ valid: boolean; newHash?: string }> => {
+    if (isLegacyHash(storedHash)) {
+      // Hash legacy SHA-256 — verificar con método anterior
+      const legacy = crypto.createHash("sha256").update(password + SALT).digest("hex");
+      if (legacy !== storedHash) return { valid: false };
+      // Contraseña correcta → migrar a bcrypt automáticamente
+      const newHash = await bcrypt.hash(password, 12);
+      return { valid: true, newHash };
+    }
+    // Hash bcrypt normal
+    const valid = await bcrypt.compare(password, storedHash);
+    return { valid };
+  };
 
   // ================= DATABASE (PostgreSQL) =================
   const pool = new Pool({
@@ -242,7 +269,8 @@ async function startServer() {
   let isDbConnected = false;
 
   const MOCK_DB_FILE = path.join(process.cwd(), ".mockdb.json");
-  const adminHash = crypto.createHash("sha256").update("Admin123!" + "hdreams_salt_2026").digest("hex");
+  // Hash bcrypt de "Admin123!" (12 rounds) — cambia esta contraseña en producción.
+  const ADMIN_DEFAULT_HASH = "$2b$12$Fxsd7IaL8MnSBJXrVUmi3uJM7YGhlSMhX458qH90hPTIT0EJq2yFW";
 
   type MockUser = { uid: string; email: string; role: string; nombres: string; password_hash: string; status?: string; createdAt?: string };
   type Expense  = { id: string; userId: string; amount: number; category: string; description: string; date: string; createdAt: string };
@@ -432,8 +460,8 @@ async function startServer() {
     } catch {}
     return {
       users: [
-        { uid: "USR-MASTER-001", email: "admin@hdreams.com",          role: "gerente",  nombres: "Administrador", password_hash: adminHash,                                                                                status: "active", createdAt: new Date().toISOString() },
-        { uid: "USR-EDGAR-001",  email: "edgarlovera20@gmail.com",    role: "gerente",  nombres: "Edgar Lovera",  password_hash: "a2c268278fb3b83b49b581ed13426a9b21f2661513aa6ba74d0a97b221201d50", status: "active", createdAt: new Date().toISOString() }
+        { uid: "USR-MASTER-001", email: "admin@hdreams.com",       role: "gerente", nombres: "Administrador", password_hash: ADMIN_DEFAULT_HASH, status: "active", createdAt: new Date().toISOString() },
+        { uid: "USR-EDGAR-001",  email: "edgarlovera20@gmail.com", role: "gerente", nombres: "Edgar Lovera",  password_hash: ADMIN_DEFAULT_HASH, status: "active", createdAt: new Date().toISOString() }
       ],
       ventas: [],
       botCandidates: [],
@@ -574,7 +602,7 @@ async function startServer() {
     try {
       const { email, password, nombres, apellidoPaterno, puestoActual, usuario } = req.body;
       const uid = "USR-" + Date.now();
-      const password_hash = hashPassword(password);
+      const password_hash = await hashPassword(password);
 
       if (isDbConnected) {
         await pool.query(
@@ -610,8 +638,17 @@ async function startServer() {
         if (!user) return res.status(401).json({ error: "Usuario no encontrado. Usa admin@hdreams.com / Admin123! o registrate primero." });
       }
 
-      if (user.password_hash !== hashPassword(password)) {
-        return res.status(401).json({ error: "Contrasena incorrecta" });
+      const { valid, newHash } = await verifyPassword(password, user.password_hash);
+      if (!valid) return res.status(401).json({ error: "Contraseña incorrecta" });
+
+      // Auto-migración: si el hash era SHA-256, persistir el nuevo hash bcrypt
+      if (newHash) {
+        user.password_hash = newHash;
+        if (isDbConnected) {
+          await pool.query("UPDATE users SET password_hash = $1 WHERE uid = $2", [newHash, user.uid]);
+        } else {
+          saveMockDb(mockDb);
+        }
       }
 
       const sessionToken = issueToken(user.uid, user.email, user.role);
@@ -1517,7 +1554,7 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
       if (!email || !password || !nombres) return res.status(400).json({ error: "Faltan campos: email, password, nombres" });
       if (mockDb.users.find(u => u.email === email)) return res.status(400).json({ error: "Email ya registrado" });
       const uid = "USR-" + Date.now();
-      const newUser: MockUser = { uid, email, role: role || "vendedor", nombres, password_hash: hashPassword(password), status: "active", createdAt: new Date().toISOString() };
+      const newUser: MockUser = { uid, email, role: role || "vendedor", nombres, password_hash: await hashPassword(password), status: "active", createdAt: new Date().toISOString() };
       mockDb.users.push(newUser);
       saveMockDb(mockDb);
       res.json({ uid, email, role: newUser.role, nombres, status: "active" });
@@ -1547,12 +1584,12 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   });
 
   // POST /api/admin/users/:uid/reset-password
-  app.post("/api/admin/users/:uid/reset-password", (req, res) => {
+  app.post("/api/admin/users/:uid/reset-password", async (req, res) => {
     const u = mockDb.users.find(x => x.uid === req.params.uid);
     if (!u) return res.status(404).json({ error: "Usuario no encontrado" });
     const { newPassword } = req.body;
     if (!newPassword) return res.status(400).json({ error: "Falta newPassword" });
-    u.password_hash = hashPassword(newPassword);
+    u.password_hash = await hashPassword(newPassword);
     saveMockDb(mockDb);
     res.json({ ok: true });
   });
