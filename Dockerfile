@@ -49,6 +49,9 @@ COPY --from=builder /app/build ./build
 # Backend compilado (bundle único, no necesita tsx ni tsc en runtime)
 COPY --from=builder /app/dist ./dist
 
+# Migraciones SQL (leídas en runtime por migrate.ts vía process.cwd())
+COPY --from=builder /app/migrations ./migrations
+
 # Puerto expuesto
 EXPOSE 3000
 

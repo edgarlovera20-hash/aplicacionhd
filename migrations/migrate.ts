@@ -38,7 +38,10 @@ export async function runMigrations(pool: PgPool): Promise<void> {
   const applied = new Set(rows.map(r => r.version));
 
   // Leer archivos SQL disponibles
-  const migrationsDir = path.dirname(new URL(import.meta.url).pathname);
+  // Usamos process.cwd() + 'migrations' en lugar de import.meta.url
+  // para que funcione tanto en ESM (dev con tsx) como en CJS bundle (producción con esbuild).
+  // En Docker: WORKDIR=/app → process.cwd()='/app' → '/app/migrations'
+  const migrationsDir = path.join(process.cwd(), 'migrations');
   const files = fs
     .readdirSync(migrationsDir)
     .filter(f => /^\d+.*\.sql$/.test(f))
