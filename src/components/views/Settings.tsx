@@ -1330,7 +1330,7 @@ function BotTab() {
 }
 
 /* ═══════════════════════════════════════════
-   TAB — CANALES WhatsApp (Multi-cuenta)
+   TAB — CANALES WhatsApp + Facebook (Multi-cuenta)
 ═══════════════════════════════════════════ */
 type WAAccount = {
   id: string; nombre: string; phoneId: string; accessToken: string;
@@ -1339,6 +1339,27 @@ type WAAccount = {
   status: 'activo'|'inactivo'|'error'|'sin_configurar';
   displayPhone?: string; lastChecked?: string;
 };
+type FBAccount = {
+  id: string; nombre: string; pageId: string; accessToken: string;
+  tipo: 'reclutamiento'|'clientes'|'cobranza'|'soporte'|'marketing';
+  activo: boolean;
+  status: 'activo'|'inactivo'|'error'|'sin_configurar';
+  pageName?: string; category?: string; lastChecked?: string;
+};
+type WAQRCanalSession = {
+  id: string; nombre: string; tipo: 'personal'|'business';
+  activo: boolean; phoneNumber?: string; createdAt: string;
+};
+type TelegramBot = {
+  id: string; nombre: string; token: string; activo: boolean;
+  status: 'activo'|'inactivo'|'error'|'sin_configurar';
+  botUsername?: string; botName?: string; lastChecked?: string;
+};
+type QRSessionStatus = {
+  status: 'desconectado'|'esperando_qr'|'qr_listo'|'autenticando'|'conectado'|'error';
+  qr?: string; phoneNumber?: string; error?: string;
+};
+const IS_DEV = (import.meta as any).env?.DEV ?? false;
 
 const TIPO_LABELS: Record<string, string> = {
   reclutamiento: 'Reclutamiento', clientes: 'Clientes', cobranza: 'Cobranza', soporte: 'Soporte',
@@ -1455,31 +1476,457 @@ function WAAccountModal({
   );
 }
 
+function FBAccountModal({
+  account, onClose, onSaved,
+}: { account: FBAccount | null; onClose: () => void; onSaved: (a: FBAccount) => void }) {
+  const [form, setForm] = useState({
+    nombre:      account?.nombre || '',
+    pageId:      account?.pageId || '',
+    accessToken: '',
+    tipo:        account?.tipo   || 'marketing' as FBAccount['tipo'],
+    activo:      account?.activo !== false,
+  });
+  const [saving, setSaving]     = useState(false);
+  const [err, setErr]           = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const handle = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    if (!form.nombre) { setErr('El nombre es requerido'); return; }
+    setSaving(true); setErr('');
+    try {
+      const body: any = { nombre: form.nombre, pageId: form.pageId, tipo: form.tipo, activo: form.activo };
+      if (form.accessToken) body.accessToken = form.accessToken;
+      let r;
+      if (account) {
+        r = await fetch(`/api/fb/accounts/${account.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      } else {
+        r = await fetch('/api/fb/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error); }
+      onSaved(await r.json());
+    } catch (e: any) { setErr(e.message || 'Error al guardar'); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold text-zinc-100">{account ? 'Editar página Facebook' : 'Nueva página Facebook'}</h3>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+        {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
+        <div className="space-y-3">
+          <Field label="Nombre de la cuenta">
+            <input value={form.nombre} onChange={e => handle('nombre', e.target.value)} placeholder="Ej. Página Heavenly Dreams" className={inputCls} />
+          </Field>
+          <Field label="Uso">
+            <select value={form.tipo} onChange={e => handle('tipo', e.target.value)} className={inputCls}>
+              <option value="marketing">Marketing</option>
+              <option value="reclutamiento">Reclutamiento</option>
+              <option value="clientes">Clientes</option>
+              <option value="cobranza">Cobranza</option>
+              <option value="soporte">Soporte</option>
+            </select>
+          </Field>
+          <Field label="Facebook Page ID">
+            <input value={form.pageId} onChange={e => handle('pageId', e.target.value)} placeholder="123456789012345" className={inputCls} />
+          </Field>
+          <Field label={account ? 'Nuevo Page Access Token (dejar vacío = sin cambios)' : 'Page Access Token'}>
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={form.accessToken} onChange={e => handle('accessToken', e.target.value)}
+                placeholder={account ? 'Solo si quieres cambiarlo...' : 'EAA...'}
+                className={cn(inputCls, 'pr-10')}
+              />
+              <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-zinc-600 mt-1">Token de página permanente desde Business Manager → System Users.</p>
+          </Field>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => handle('activo', !form.activo)}
+              className={cn('relative w-10 h-6 rounded-full transition-colors border', form.activo ? 'bg-emerald-500 border-emerald-400' : 'bg-zinc-700 border-zinc-600')}
+            >
+              <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', form.activo ? 'left-4' : 'left-0.5')} />
+            </button>
+            <span className="text-sm text-zinc-300">{form.activo ? 'Cuenta activa' : 'Cuenta inactiva'}</span>
+          </div>
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            {saving ? 'Guardando...' : account ? 'Actualizar' : 'Crear página'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── WhatsApp QR Modal ────────────────────────────────────────────
+function WAQRModal({ session, onClose, onConnected }: {
+  session: WAQRCanalSession; onClose: () => void; onConnected: (phone: string) => void;
+}) {
+  const [state, setState] = React.useState<QRSessionStatus>({ status: 'desconectado' });
+  const [mode, setMode]   = React.useState<'real'|'stub'>('stub');
+  const [loading, setLoading] = React.useState(false);
+  const pollRef = React.useRef<ReturnType<typeof setInterval>|null>(null);
+
+  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const poll = () => {
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/canales/whatsapp-qr/${session.id}/status`);
+        const d = await r.json();
+        setMode(d.mode);
+        setState(d.state);
+        if (d.state.status === 'conectado') {
+          stopPoll();
+          if (d.state.phoneNumber) onConnected(d.state.phoneNumber);
+        }
+      } catch {}
+    }, 2000);
+  };
+
+  const start = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/canales/whatsapp-qr/${session.id}/start`, { method: 'POST' });
+      const d = await r.json();
+      setMode(d.mode);
+      setState(d.state);
+      poll();
+    } catch {}
+    setLoading(false);
+  };
+
+  const disconnect = async () => {
+    stopPoll();
+    await fetch(`/api/canales/whatsapp-qr/${session.id}/disconnect`, { method: 'POST' });
+    setState({ status: 'desconectado' });
+  };
+
+  const stubConnect = async () => {
+    await fetch(`/api/canales/whatsapp-qr/${session.id}/stub-connect`, { method: 'POST' });
+  };
+
+  React.useEffect(() => {
+    // Check current status on open
+    fetch(`/api/canales/whatsapp-qr/${session.id}/status`)
+      .then(r => r.json()).then(d => { setMode(d.mode); setState(d.state); if (d.state.status !== 'conectado') poll(); })
+      .catch(() => {});
+    return () => stopPoll();
+  }, [session.id]);
+
+  const QR_URL = state.qr
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=10&data=${encodeURIComponent(state.qr)}`
+    : null;
+
+  const isWA  = session.tipo === 'personal';
+  const color = isWA ? 'bg-emerald-600' : 'bg-teal-600';
+  const label = isWA ? 'WhatsApp' : 'WhatsApp Business';
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <span className={cn('px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider text-white', color)}>{label}</span>
+            <span className="text-sm font-semibold text-zinc-200 truncate">{session.nombre}</span>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+
+        {/* QR / Estado */}
+        <div className="flex flex-col items-center gap-3 py-2">
+          {state.status === 'desconectado' && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-2xl bg-zinc-800 border border-white/5 flex items-center justify-center mx-auto">
+                <Smartphone className="w-10 h-10 text-zinc-600" />
+              </div>
+              <p className="text-sm text-zinc-400">Sesión no iniciada</p>
+              <button onClick={start} disabled={loading} className={cn('px-5 py-2.5 rounded-xl text-white text-sm font-semibold transition-all flex items-center gap-2 mx-auto', color.replace('bg-','bg-').replace('600','600') + ' hover:opacity-90')}>
+                {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Iniciando…</> : <><Zap className="w-4 h-4" /> Generar QR</>}
+              </button>
+            </div>
+          )}
+
+          {(state.status === 'esperando_qr' || state.status === 'autenticando') && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-2xl bg-zinc-800 border border-white/5 flex items-center justify-center mx-auto">
+                <Loader2 className="w-10 h-10 text-zinc-500 animate-spin" />
+              </div>
+              <p className="text-sm text-zinc-400">{state.status === 'autenticando' ? 'Autenticando...' : 'Generando QR...'}</p>
+            </div>
+          )}
+
+          {state.status === 'qr_listo' && QR_URL && (
+            <div className="text-center space-y-3">
+              <div className="bg-white p-2 rounded-xl inline-block shadow-xl">
+                <img src={QR_URL} alt="QR WhatsApp" className="w-56 h-56 rounded-lg" />
+              </div>
+              <p className="text-xs text-zinc-400">
+                Abre {label} → <span className="font-semibold text-zinc-200">Dispositivos vinculados</span> → Vincular dispositivo
+              </p>
+              {mode === 'stub' && IS_DEV && (
+                <button onClick={stubConnect} className="text-[10px] text-zinc-600 hover:text-zinc-400 underline">
+                  [DEV] Simular escaneo
+                </button>
+              )}
+            </div>
+          )}
+
+          {state.status === 'conectado' && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border-2 border-emerald-500/40 flex items-center justify-center mx-auto">
+                <Check className="w-10 h-10 text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-emerald-400">Conectado</p>
+                {state.phoneNumber && <p className="text-xs text-zinc-500 font-mono mt-0.5">{state.phoneNumber}</p>}
+              </div>
+              <button onClick={disconnect} className="text-xs text-red-400 hover:text-red-300 underline">Desconectar sesión</button>
+            </div>
+          )}
+
+          {state.status === 'error' && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto">
+                <AlertTriangle className="w-10 h-10 text-red-400" />
+              </div>
+              <p className="text-xs text-red-400">{state.error || 'Error al conectar'}</p>
+              <button onClick={start} className="text-xs text-zinc-400 hover:text-white underline">Reintentar</button>
+            </div>
+          )}
+        </div>
+
+        {mode === 'stub' && state.status !== 'conectado' && (
+          <p className="text-[10px] text-center text-zinc-700">Modo demo — instala <span className="font-mono">whatsapp-web.js</span> para QR real</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Telegram Bot Modal ───────────────────────────────────────────
+function TelegramBotModal({ bot, onClose, onSaved }: {
+  bot: TelegramBot | null; onClose: () => void; onSaved: (b: TelegramBot) => void;
+}) {
+  const [form, setForm] = React.useState({ nombre: bot?.nombre || '', token: '', activo: bot?.activo !== false });
+  const [saving, setSaving]     = React.useState(false);
+  const [err, setErr]           = React.useState('');
+  const [showToken, setShowToken] = React.useState(false);
+  const handle = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    if (!form.nombre) { setErr('El nombre es requerido'); return; }
+    setSaving(true); setErr('');
+    try {
+      const body: any = { nombre: form.nombre, activo: form.activo };
+      if (form.token) body.token = form.token;
+      let r;
+      if (bot) {
+        r = await fetch(`/api/canales/telegram/${bot.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      } else {
+        if (!form.token) { setErr('El token es requerido'); setSaving(false); return; }
+        r = await fetch('/api/canales/telegram', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error); }
+      onSaved(await r.json());
+    } catch (e: any) { setErr(e.message || 'Error al guardar'); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-[#229ED9] flex items-center justify-center text-white text-[11px] font-black">✈</span>
+            {bot ? 'Editar bot Telegram' : 'Nuevo bot Telegram'}
+          </h3>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+        {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
+        <div className="space-y-3">
+          <Field label="Nombre del bot">
+            <input value={form.nombre} onChange={e => handle('nombre', e.target.value)} placeholder="Ej. Bot Reclutamiento HD" className={inputCls} />
+          </Field>
+          <Field label={bot ? 'Nuevo Token (dejar vacío = sin cambios)' : 'Bot Token'}>
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={form.token} onChange={e => handle('token', e.target.value)}
+                placeholder={bot ? 'Solo si quieres cambiarlo...' : '123456789:AAF...'}
+                className={cn(inputCls, 'pr-10')}
+              />
+              <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-zinc-600 mt-1">Obtén el token de <span className="text-[#229ED9] font-mono">@BotFather</span> en Telegram → /newbot</p>
+          </Field>
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => handle('activo', !form.activo)}
+              className={cn('relative w-10 h-6 rounded-full transition-colors border', form.activo ? 'bg-[#229ED9] border-[#229ED9]/60' : 'bg-zinc-700 border-zinc-600')}>
+              <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', form.activo ? 'left-4' : 'left-0.5')} />
+            </button>
+            <span className="text-sm text-zinc-300">{form.activo ? 'Bot activo' : 'Bot inactivo'}</span>
+          </div>
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-[#229ED9] hover:bg-[#1a8bbf] text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            {saving ? 'Guardando...' : bot ? 'Actualizar' : 'Agregar bot'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const FB_TIPO_LABELS: Record<string, string> = {
+  marketing: 'Marketing', reclutamiento: 'Reclutamiento', clientes: 'Clientes', cobranza: 'Cobranza', soporte: 'Soporte',
+};
+const FB_TIPO_COLORS: Record<string, string> = {
+  marketing:     'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  reclutamiento: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
+  clientes:      'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  cobranza:      'bg-red-500/10 text-red-400 border-red-500/20',
+  soporte:       'bg-amber-500/10 text-amber-400 border-amber-500/20',
+};
+
 function CanalesTab() {
+  // WhatsApp state
   const [accounts, setAccounts] = useState<WAAccount[]>([]);
   const [loading, setLoading]   = useState(true);
   const [editing, setEditing]   = useState<WAAccount | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [testing, setTesting]   = useState<string | null>(null);
-  const [toast, setToast]       = useState('');
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
 
+  // Facebook state
+  const [fbAccounts, setFbAccounts]     = useState<FBAccount[]>([]);
+  const [fbLoading, setFbLoading]       = useState(true);
+  const [fbEditing, setFbEditing]       = useState<FBAccount | null>(null);
+  const [showFbModal, setShowFbModal]   = useState(false);
+  const [fbTesting, setFbTesting]       = useState<string | null>(null);
+  const [fbTestResults, setFbTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+
+  // WhatsApp QR state
+  const [wqrSessions, setWqrSessions]   = useState<WAQRCanalSession[]>([]);
+  const [wqrLoading, setWqrLoading]     = useState(true);
+  const [wqrModal, setWqrModal]         = useState<WAQRCanalSession | null>(null);
+  const [showNewWqr, setShowNewWqr]     = useState(false);
+  const [newWqrForm, setNewWqrForm]     = useState({ nombre: '', tipo: 'personal' as 'personal'|'business' });
+
+  // Telegram state
+  const [tgBots, setTgBots]             = useState<TelegramBot[]>([]);
+  const [tgLoading, setTgLoading]       = useState(true);
+  const [tgEditing, setTgEditing]       = useState<TelegramBot | null>(null);
+  const [showTgModal, setShowTgModal]   = useState(false);
+  const [tgTesting, setTgTesting]       = useState<string | null>(null);
+  const [tgTestResults, setTgTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+
+  const [toast, setToast] = useState('');
   const notify = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3200); };
 
   const load = async () => {
     setLoading(true);
     try { setAccounts(await (await fetch('/api/wa/accounts')).json()); }
-    catch { notify('Error cargando cuentas'); }
+    catch { notify('Error cargando cuentas WA'); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  const loadFb = async () => {
+    setFbLoading(true);
+    try { setFbAccounts(await (await fetch('/api/fb/accounts')).json()); }
+    catch { notify('Error cargando cuentas Facebook'); }
+    finally { setFbLoading(false); }
+  };
+
+  const loadWqr = async () => {
+    setWqrLoading(true);
+    try { setWqrSessions(await (await fetch('/api/canales/whatsapp-qr')).json()); }
+    catch { notify('Error cargando sesiones WA QR'); }
+    finally { setWqrLoading(false); }
+  };
+
+  const loadTg = async () => {
+    setTgLoading(true);
+    try { setTgBots(await (await fetch('/api/canales/telegram')).json()); }
+    catch { notify('Error cargando bots Telegram'); }
+    finally { setTgLoading(false); }
+  };
+
+  useEffect(() => { load(); loadFb(); loadWqr(); loadTg(); }, []);
 
   const del = async (id: string, nombre: string) => {
     if (!confirm(`¿Eliminar "${nombre}"?`)) return;
     await fetch(`/api/wa/accounts/${id}`, { method: 'DELETE' });
     setAccounts(prev => prev.filter(a => a.id !== id));
     notify('Cuenta eliminada');
+  };
+
+  const delFb = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar "${nombre}"?`)) return;
+    await fetch(`/api/fb/accounts/${id}`, { method: 'DELETE' });
+    setFbAccounts(prev => prev.filter(a => a.id !== id));
+    notify('Página eliminada');
+  };
+
+  const createWqrSession = async () => {
+    if (!newWqrForm.nombre) { notify('Escribe un nombre'); return; }
+    try {
+      const r = await fetch('/api/canales/whatsapp-qr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newWqrForm) });
+      const s = await r.json() as WAQRCanalSession;
+      setWqrSessions(prev => [...prev, s]);
+      setShowNewWqr(false);
+      setNewWqrForm({ nombre: '', tipo: 'personal' });
+      setWqrModal(s);
+      notify('Sesión creada — escanea el QR');
+    } catch { notify('Error creando sesión'); }
+  };
+
+  const delWqr = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar sesión "${nombre}"?`)) return;
+    await fetch(`/api/canales/whatsapp-qr/${id}`, { method: 'DELETE' });
+    setWqrSessions(prev => prev.filter(s => s.id !== id));
+    notify('Sesión eliminada');
+  };
+
+  const testTgBot = async (id: string) => {
+    setTgTesting(id);
+    try {
+      const r = await fetch(`/api/canales/telegram/${id}/test`, { method: 'POST' });
+      const data = await r.json() as { ok: boolean; error?: string; botUsername?: string; botName?: string };
+      setTgTestResults(prev => ({
+        ...prev,
+        [id]: data.ok
+          ? { ok: true, msg: `✅ @${data.botUsername} — ${data.botName}` }
+          : { ok: false, msg: `❌ ${data.error || 'Token inválido'}` },
+      }));
+      await loadTg();
+    } catch { setTgTestResults(prev => ({ ...prev, [id]: { ok: false, msg: '❌ Error de red' } })); }
+    finally { setTgTesting(null); }
+  };
+
+  const delTg = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar bot "${nombre}"?`)) return;
+    await fetch(`/api/canales/telegram/${id}`, { method: 'DELETE' });
+    setTgBots(prev => prev.filter(b => b.id !== id));
+    notify('Bot eliminado');
   };
 
   const testAccount = async (id: string) => {
@@ -1493,10 +1940,25 @@ function CanalesTab() {
           ? { ok: true, msg: `✅ Conectada${data.displayPhone ? ` — ${data.displayPhone}` : ''}${data.verifiedName ? ` (${data.verifiedName})` : ''}` }
           : { ok: false, msg: `❌ ${data.error || 'Error desconocido'}` },
       }));
-      // Refresh to pick up status change
       await load();
     } catch { setTestResults(prev => ({ ...prev, [id]: { ok: false, msg: '❌ Error de red' } })); }
     finally { setTesting(null); }
+  };
+
+  const testFbAccount = async (id: string) => {
+    setFbTesting(id);
+    try {
+      const r = await fetch(`/api/fb/accounts/${id}/test`, { method: 'POST' });
+      const data = await r.json() as { ok: boolean; error?: string; pageName?: string; category?: string };
+      setFbTestResults(prev => ({
+        ...prev,
+        [id]: data.ok
+          ? { ok: true, msg: `✅ Conectada${data.pageName ? ` — ${data.pageName}` : ''}${data.category ? ` (${data.category})` : ''}` }
+          : { ok: false, msg: `❌ ${data.error || 'Error desconocido'}` },
+      }));
+      await loadFb();
+    } catch { setFbTestResults(prev => ({ ...prev, [id]: { ok: false, msg: '❌ Error de red' } })); }
+    finally { setFbTesting(null); }
   };
 
   // Group by tipo
@@ -1651,9 +2113,9 @@ function CanalesTab() {
         </div>
       )}
 
-      {/* Setup guide */}
+      {/* Setup guide WA */}
       <div className="bg-zinc-950/30 border border-white/5 rounded-xl p-5 space-y-3">
-        <p className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">Guía de configuración</p>
+        <p className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">Guía — WhatsApp Business</p>
         <ol className="space-y-1.5 text-xs text-zinc-400 list-decimal list-inside">
           <li>Ve a <span className="text-indigo-400 font-mono">developers.facebook.com</span> → tu app → WhatsApp → API Setup</li>
           <li>Obtén el <span className="text-zinc-200 font-semibold">Phone Number ID</span> de cada número registrado</li>
@@ -1664,6 +2126,269 @@ function CanalesTab() {
         </ol>
       </div>
 
+      {/* ── SECCIÓN FACEBOOK ─────────────────────────── */}
+      <div className="border-t border-white/5 pt-6 space-y-6">
+        {/* FB Header */}
+        <div className="flex flex-wrap justify-between items-start gap-4">
+          <div>
+            <h3 className="text-zinc-100 font-bold text-base flex items-center gap-2">
+              <span className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center text-white text-[10px] font-black">f</span>
+              Páginas Facebook
+            </h3>
+            <p className="text-zinc-500 text-sm mt-1">
+              Conecta tus páginas de Facebook para publicaciones y Messenger.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadFb} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
+              <RefreshCw className={cn('w-4 h-4', fbLoading && 'animate-spin')} />
+            </button>
+            <button
+              onClick={() => { setFbEditing(null); setShowFbModal(true); }}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
+            >
+              <Plus className="w-4 h-4" /> Nueva página
+            </button>
+          </div>
+        </div>
+
+        {/* FB account cards */}
+        {fbLoading ? (
+          <div className="text-center py-10 text-zinc-500">Cargando páginas…</div>
+        ) : fbAccounts.length === 0 ? (
+          <div className="text-center py-12 text-zinc-600 border border-dashed border-white/8 rounded-xl">
+            <span className="text-3xl block mb-2">f</span>
+            <p className="font-medium">Sin páginas configuradas</p>
+            <p className="text-sm mt-1">Agrega tu primera página de Facebook con el botón de arriba.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {fbAccounts.map(acc => {
+              const st = STATUS_CFG[acc.status] || STATUS_CFG.sin_configurar;
+              const tr = fbTestResults[acc.id];
+              return (
+                <div key={acc.id} className={cn('bg-zinc-950/50 border rounded-xl p-5 flex flex-col gap-3 transition-all', acc.activo ? 'border-white/8 hover:border-white/15' : 'border-white/3 opacity-60')}>
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('w-2 h-2 rounded-full shrink-0', st.dot)} />
+                        <p className="text-sm font-semibold text-zinc-100 truncate">{acc.nombre}</p>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono mt-0.5">{acc.pageName || (acc.pageId ? `ID: ${acc.pageId.slice(0,8)}…` : 'Sin Page ID')}</p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider', st.cls)}>{st.label}</span>
+                      <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider', FB_TIPO_COLORS[acc.tipo])}>{FB_TIPO_LABELS[acc.tipo]}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className={cn('w-1.5 h-1.5 rounded-full', acc.pageId ? 'bg-emerald-500' : 'bg-zinc-600')} />
+                    <span className={acc.pageId ? 'text-zinc-400' : 'text-zinc-600'}>Page ID {acc.pageId ? '✓' : '—'}</span>
+                    <span className={cn('w-1.5 h-1.5 rounded-full ml-2', acc.accessToken ? 'bg-emerald-500' : 'bg-zinc-600')} />
+                    <span className={acc.accessToken ? 'text-zinc-400' : 'text-zinc-600'}>Token {acc.accessToken ? `(${acc.accessToken})` : '—'}</span>
+                  </div>
+                  {tr && (
+                    <p className={cn('text-[11px] font-medium px-2 py-1 rounded-lg', tr.ok ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300')}>
+                      {tr.msg}
+                    </p>
+                  )}
+                  <div className="flex gap-2 mt-auto">
+                    <button
+                      onClick={() => { setFbEditing(acc); setShowFbModal(true); }}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-zinc-300 bg-zinc-800/80 hover:bg-zinc-700 transition-colors border border-white/5"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" /> Configurar
+                    </button>
+                    <button
+                      onClick={() => testFbAccount(acc.id)}
+                      disabled={fbTesting === acc.id || !acc.pageId || !acc.accessToken}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600/80 hover:bg-blue-600 transition-colors disabled:opacity-40 border border-blue-500/30"
+                    >
+                      {fbTesting === acc.id
+                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Probando…</>
+                        : <><Zap className="w-3.5 h-3.5" /> Probar</>
+                      }
+                    </button>
+                    <button
+                      onClick={() => delFb(acc.id, acc.nombre)}
+                      className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Setup guide FB */}
+        <div className="bg-zinc-950/30 border border-white/5 rounded-xl p-5 space-y-3">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">Guía — Facebook Pages</p>
+          <ol className="space-y-1.5 text-xs text-zinc-400 list-decimal list-inside">
+            <li>Ve a <span className="text-blue-400 font-mono">developers.facebook.com</span> → tu app → Facebook Login → OAuth</li>
+            <li>Obtén el <span className="text-zinc-200 font-semibold">Page ID</span> desde la configuración de tu página de Facebook</li>
+            <li>Genera un <span className="text-zinc-200 font-semibold">Page Access Token permanente</span> desde Business Manager → System Users con permiso <span className="font-mono text-zinc-300">pages_messaging</span></li>
+            <li>Pega Page ID + Token en el modal de configuración</li>
+            <li>Presiona <span className="text-zinc-200 font-semibold">Probar</span> para verificar la conexión</li>
+          </ol>
+        </div>
+      </div>
+
+      {/* ── SECCIÓN WHATSAPP QR ──────────────────────── */}
+      <div className="border-t border-white/5 pt-6 space-y-5">
+        <div className="flex flex-wrap justify-between items-start gap-4">
+          <div>
+            <h3 className="text-zinc-100 font-bold text-base flex items-center gap-2">
+              <span className="w-5 h-5 rounded bg-emerald-600 flex items-center justify-center text-white text-[11px]">✓</span>
+              WhatsApp QR — Personal y Business
+            </h3>
+            <p className="text-zinc-500 text-sm mt-1">Conecta números de WhatsApp escaneando el código QR.</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadWqr} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
+              <RefreshCw className={cn('w-4 h-4', wqrLoading && 'animate-spin')} />
+            </button>
+            <button onClick={() => setShowNewWqr(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20">
+              <Plus className="w-4 h-4" /> Nueva sesión QR
+            </button>
+          </div>
+        </div>
+
+        {/* New session inline form */}
+        {showNewWqr && (
+          <div className="bg-zinc-950/60 border border-emerald-500/20 rounded-xl p-4 space-y-3">
+            <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Nueva sesión WhatsApp QR</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1">Nombre</label>
+                <input value={newWqrForm.nombre} onChange={e => setNewWqrForm(p => ({ ...p, nombre: e.target.value }))}
+                  placeholder="Ej. Ventas Norte" className={inputCls} />
+              </div>
+              <div>
+                <label className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1">Tipo</label>
+                <select value={newWqrForm.tipo} onChange={e => setNewWqrForm(p => ({ ...p, tipo: e.target.value as 'personal'|'business' }))} className={inputCls}>
+                  <option value="personal">WhatsApp Personal</option>
+                  <option value="business">WhatsApp Business</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowNewWqr(false)} className="px-4 py-2 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+              <button onClick={createWqrSession} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold transition-colors">Crear y generar QR</button>
+            </div>
+          </div>
+        )}
+
+        {wqrLoading ? (
+          <div className="text-center py-8 text-zinc-500">Cargando sesiones…</div>
+        ) : wqrSessions.length === 0 ? (
+          <div className="text-center py-10 text-zinc-600 border border-dashed border-white/8 rounded-xl">
+            <Smartphone className="w-8 h-8 mx-auto mb-2 opacity-40" />
+            <p className="text-sm font-medium">Sin sesiones QR configuradas</p>
+            <p className="text-xs mt-1">Agrega una sesión y escanea el QR con tu teléfono.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {wqrSessions.map(s => (
+              <div key={s.id} className="bg-zinc-950/50 border border-white/8 rounded-xl p-4 flex flex-col gap-3 hover:border-white/15 transition-all">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={cn('text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider text-white', s.tipo === 'personal' ? 'bg-emerald-600' : 'bg-teal-600')}>
+                        {s.tipo === 'personal' ? 'Personal' : 'Business'}
+                      </span>
+                    </div>
+                    <p className="text-sm font-semibold text-zinc-100 mt-1 truncate">{s.nombre}</p>
+                    <p className="text-[10px] text-zinc-500 font-mono">{s.phoneNumber || 'Sin número'}</p>
+                  </div>
+                  <span className={cn('text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wider shrink-0', s.phoneNumber ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20')}>
+                    {s.phoneNumber ? 'Conectado' : 'Sin conectar'}
+                  </span>
+                </div>
+                <div className="flex gap-2 mt-auto">
+                  <button onClick={() => setWqrModal(s)} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-white bg-emerald-600/80 hover:bg-emerald-600 transition-colors border border-emerald-500/30">
+                    <Smartphone className="w-3.5 h-3.5" /> {s.phoneNumber ? 'Reconectar' : 'Conectar QR'}
+                  </button>
+                  <button onClick={() => delWqr(s.id, s.nombre)} className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── SECCIÓN TELEGRAM ─────────────────────────── */}
+      <div className="border-t border-white/5 pt-6 space-y-5">
+        <div className="flex flex-wrap justify-between items-start gap-4">
+          <div>
+            <h3 className="text-zinc-100 font-bold text-base flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-[#229ED9] flex items-center justify-center text-white text-[11px] font-black">✈</span>
+              Bots de Telegram
+            </h3>
+            <p className="text-zinc-500 text-sm mt-1">Conecta bots de Telegram con token de @BotFather.</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadTg} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
+              <RefreshCw className={cn('w-4 h-4', tgLoading && 'animate-spin')} />
+            </button>
+            <button onClick={() => { setTgEditing(null); setShowTgModal(true); }} className="text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg" style={{ background: '#229ED9' }}>
+              <Plus className="w-4 h-4" /> Nuevo bot
+            </button>
+          </div>
+        </div>
+
+        {tgLoading ? (
+          <div className="text-center py-8 text-zinc-500">Cargando bots…</div>
+        ) : tgBots.length === 0 ? (
+          <div className="text-center py-10 text-zinc-600 border border-dashed border-white/8 rounded-xl">
+            <span className="text-3xl block mb-2 opacity-50">✈</span>
+            <p className="text-sm font-medium">Sin bots configurados</p>
+            <p className="text-xs mt-1">Crea un bot en @BotFather y pega el token aquí.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {tgBots.map(bot => {
+              const st = STATUS_CFG[bot.status] || STATUS_CFG.sin_configurar;
+              const tr = tgTestResults[bot.id];
+              return (
+                <div key={bot.id} className={cn('bg-zinc-950/50 border rounded-xl p-5 flex flex-col gap-3 transition-all', bot.activo ? 'border-white/8 hover:border-white/15' : 'border-white/3 opacity-60')}>
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('w-2 h-2 rounded-full shrink-0', st.dot)} />
+                        <p className="text-sm font-semibold text-zinc-100 truncate">{bot.nombre}</p>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono mt-0.5">{bot.botUsername ? `@${bot.botUsername}` : 'Sin verificar'}</p>
+                    </div>
+                    <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider shrink-0', st.cls)}>{st.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className={cn('w-1.5 h-1.5 rounded-full', bot.token ? 'bg-emerald-500' : 'bg-zinc-600')} />
+                    <span className={bot.token ? 'text-zinc-400' : 'text-zinc-600'}>Token {bot.token ? `(${bot.token})` : '—'}</span>
+                  </div>
+                  {tr && <p className={cn('text-[11px] font-medium px-2 py-1 rounded-lg', tr.ok ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300')}>{tr.msg}</p>}
+                  <div className="flex gap-2 mt-auto">
+                    <button onClick={() => { setTgEditing(bot); setShowTgModal(true); }} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-zinc-300 bg-zinc-800/80 hover:bg-zinc-700 transition-colors border border-white/5">
+                      <Edit2 className="w-3.5 h-3.5" /> Editar
+                    </button>
+                    <button onClick={() => testTgBot(bot.id)} disabled={tgTesting === bot.id || !bot.token} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-white transition-colors disabled:opacity-40 border" style={{ background: '#229ED9aa', borderColor: '#229ED930' }}>
+                      {tgTesting === bot.id ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Probando…</> : <><Zap className="w-3.5 h-3.5" /> Probar</>}
+                    </button>
+                    <button onClick={() => delTg(bot.id, bot.nombre)} className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Modales */}
       {showModal && (
         <WAAccountModal
           account={editing}
@@ -1673,6 +2398,43 @@ function CanalesTab() {
             else setAccounts(prev => [...prev, saved]);
             setShowModal(false);
             notify(editing ? 'Cuenta actualizada' : 'Cuenta creada');
+          }}
+        />
+      )}
+
+      {showFbModal && (
+        <FBAccountModal
+          account={fbEditing}
+          onClose={() => setShowFbModal(false)}
+          onSaved={saved => {
+            if (fbEditing) setFbAccounts(prev => prev.map(a => a.id === saved.id ? saved : a));
+            else setFbAccounts(prev => [...prev, saved]);
+            setShowFbModal(false);
+            notify(fbEditing ? 'Página actualizada' : 'Página creada');
+          }}
+        />
+      )}
+
+      {wqrModal && (
+        <WAQRModal
+          session={wqrModal}
+          onClose={() => setWqrModal(null)}
+          onConnected={phone => {
+            setWqrSessions(prev => prev.map(s => s.id === wqrModal.id ? { ...s, phoneNumber: phone } : s));
+            notify(`✅ Conectado: ${phone}`);
+          }}
+        />
+      )}
+
+      {showTgModal && (
+        <TelegramBotModal
+          bot={tgEditing}
+          onClose={() => setShowTgModal(false)}
+          onSaved={saved => {
+            if (tgEditing) setTgBots(prev => prev.map(b => b.id === saved.id ? saved : b));
+            else setTgBots(prev => [...prev, saved]);
+            setShowTgModal(false);
+            notify(tgEditing ? 'Bot actualizado' : 'Bot agregado');
           }}
         />
       )}

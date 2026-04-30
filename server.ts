@@ -272,6 +272,36 @@ async function startServer() {
     displayPhone?: string;   // E.164 verified number from Meta
     lastChecked?: string;    // ISO timestamp of last connection test
   };
+  type FBAccount = {
+    id: string;
+    nombre: string;          // Display name, e.g. "Página Heavenly Dreams"
+    pageId: string;          // Facebook Page ID
+    accessToken: string;     // Page Access Token (masked on GET)
+    tipo: 'reclutamiento' | 'clientes' | 'cobranza' | 'soporte' | 'marketing';
+    activo: boolean;
+    status: 'activo' | 'inactivo' | 'error' | 'sin_configurar';
+    pageName?: string;       // Verified page name from Graph API
+    category?: string;       // Page category from Meta
+    lastChecked?: string;    // ISO timestamp of last connection test
+  };
+  type WAQRCanalSession = {
+    id: string;           // used as sessionId in whatsappEngine
+    nombre: string;       // display label e.g. "WhatsApp Ventas"
+    tipo: 'personal' | 'business';
+    activo: boolean;
+    phoneNumber?: string; // E.164 once connected
+    createdAt: string;
+  };
+  type TelegramBot = {
+    id: string;
+    nombre: string;
+    token: string;        // masked on GET
+    activo: boolean;
+    status: 'activo' | 'inactivo' | 'error' | 'sin_configurar';
+    botUsername?: string;
+    botName?: string;
+    lastChecked?: string;
+  };
   type UserPref = { userId: string; visibleColumns: string[]; kpiConfig: Record<string,boolean>; updatedAt: string };
   type BotCandidate = {
     id: string; phone: string; name: string; age: number; experience: string;
@@ -415,6 +445,9 @@ async function startServer() {
     inventory: InventoryItem[];
     auditLog: AuditEntry[];
     waAccounts: WAAccount[];
+    fbAccounts: FBAccount[];
+    waQRSessions: WAQRCanalSession[];
+    telegramBots: TelegramBot[];
     recruitmentAgents: RecruitmentAgent[];
     agents: Agent[];
     agentMemory: AgentMemoryEntry[];
@@ -438,6 +471,9 @@ async function startServer() {
         if (!data.inventory)             data.inventory = [];
         if (!data.auditLog)              data.auditLog = [];
         if (!data.waAccounts)            data.waAccounts = [];
+        if (!data.fbAccounts)            data.fbAccounts = [];
+        if (!data.waQRSessions)          data.waQRSessions = [];
+        if (!data.telegramBots)          data.telegramBots = [];
         if (!data.recruitmentAgents)     data.recruitmentAgents = [];
         if (!data.agents)                data.agents = [];
         if (!data.agentMemory)           data.agentMemory = [];
@@ -474,6 +510,9 @@ async function startServer() {
         { id: 'WA-REC-005', nombre: 'Reclutamiento 5',             phoneId: '', accessToken: '', tipo: 'reclutamiento', orden: 5, activo: true,  status: 'sin_configurar' },
         { id: 'WA-CLI-001', nombre: 'Clientes — Seguimiento',      phoneId: '', accessToken: '', tipo: 'clientes',      orden: 1, activo: true,  status: 'sin_configurar' },
       ],
+      fbAccounts: [],
+      waQRSessions: [],
+      telegramBots: [],
     };
   };
   // Mutex para serializar escrituras al MockDB — evita race conditions cuando
@@ -1765,6 +1804,254 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
         account.lastChecked  = new Date().toISOString();
         saveMockDb(mockDb);
         return res.json({ ok: true, displayPhone: account.displayPhone, verifiedName: data.verified_name });
+      } else {
+        account.status = 'error';
+        account.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: false, error: data.error?.message || 'Error de autenticación Meta' });
+      }
+    } catch (e: any) {
+      account.status = 'error';
+      saveMockDb(mockDb);
+      return res.json({ ok: false, error: e.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  CANALES — WhatsApp QR (personal + business)
+  // ═══════════════════════════════════════════════════════════════
+
+  /** GET /api/canales/whatsapp-qr — list sessions */
+  app.get('/api/canales/whatsapp-qr', (_req, res) => {
+    res.json(mockDb.waQRSessions || []);
+  });
+
+  /** POST /api/canales/whatsapp-qr — create session record */
+  app.post('/api/canales/whatsapp-qr', requireRole('gerente', 'administracion'), (req, res) => {
+    if (!mockDb.waQRSessions) mockDb.waQRSessions = [];
+    const { nombre, tipo } = req.body as { nombre: string; tipo: 'personal'|'business' };
+    if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
+    const session: WAQRCanalSession = {
+      id: 'WQR-' + Date.now(),
+      nombre,
+      tipo: tipo || 'personal',
+      activo: true,
+      createdAt: new Date().toISOString(),
+    };
+    mockDb.waQRSessions.push(session);
+    saveMockDb(mockDb);
+    res.json(session);
+  });
+
+  /** PATCH /api/canales/whatsapp-qr/:id — update label/tipo */
+  app.patch('/api/canales/whatsapp-qr/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const s = (mockDb.waQRSessions || []).find(x => x.id === req.params.id);
+    if (!s) return res.status(404).json({ error: 'Sesión no encontrada' });
+    if (req.body.nombre) s.nombre = req.body.nombre;
+    if (req.body.tipo)   s.tipo   = req.body.tipo;
+    if (req.body.activo !== undefined) s.activo = req.body.activo;
+    saveMockDb(mockDb);
+    res.json(s);
+  });
+
+  /** DELETE /api/canales/whatsapp-qr/:id — delete + disconnect */
+  app.delete('/api/canales/whatsapp-qr/:id', requireRole('gerente', 'administracion'), async (req, res) => {
+    const before = (mockDb.waQRSessions || []).length;
+    mockDb.waQRSessions = (mockDb.waQRSessions || []).filter(x => x.id !== req.params.id);
+    if (mockDb.waQRSessions.length === before) return res.status(404).json({ error: 'Sesión no encontrada' });
+    await whatsappEngine.disconnect(req.params.id);
+    saveMockDb(mockDb);
+    res.json({ ok: true });
+  });
+
+  /** POST /api/canales/whatsapp-qr/:id/start — inicia o reanuda QR */
+  app.post('/api/canales/whatsapp-qr/:id/start', async (req, res) => {
+    const s = (mockDb.waQRSessions || []).find(x => x.id === req.params.id);
+    if (!s) return res.status(404).json({ error: 'Sesión no encontrada' });
+    const state = await whatsappEngine.start(req.params.id);
+    res.json({ ok: true, mode: whatsappEngine.getMode(), state });
+  });
+
+  /** GET /api/canales/whatsapp-qr/:id/status — poll QR / estado */
+  app.get('/api/canales/whatsapp-qr/:id/status', (req, res) => {
+    const state = whatsappEngine.getStatus(req.params.id);
+    // Persist phone number when connected
+    const s = (mockDb.waQRSessions || []).find(x => x.id === req.params.id);
+    if (s && state.status === 'conectado' && state.phoneNumber && s.phoneNumber !== state.phoneNumber) {
+      s.phoneNumber = state.phoneNumber;
+      saveMockDb(mockDb);
+    }
+    res.json({ mode: whatsappEngine.getMode(), state });
+  });
+
+  /** POST /api/canales/whatsapp-qr/:id/disconnect */
+  app.post('/api/canales/whatsapp-qr/:id/disconnect', async (req, res) => {
+    await whatsappEngine.disconnect(req.params.id);
+    res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
+  });
+
+  /** POST /api/canales/whatsapp-qr/:id/stub-connect — DEV ONLY */
+  if (!IS_PROD) {
+    app.post('/api/canales/whatsapp-qr/:id/stub-connect', (req, res) => {
+      const ok = whatsappEngine.stubMarkConnected(req.params.id);
+      if (!ok) return res.status(400).json({ error: 'Solo disponible en modo stub' });
+      res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  CANALES — Telegram Bots
+  // ═══════════════════════════════════════════════════════════════
+
+  /** GET /api/canales/telegram — list bots (token masked) */
+  app.get('/api/canales/telegram', (_req, res) => {
+    const bots = (mockDb.telegramBots || []).map(b => ({ ...b, token: maskToken(b.token) }));
+    res.json(bots);
+  });
+
+  /** POST /api/canales/telegram — add bot */
+  app.post('/api/canales/telegram', requireRole('gerente', 'administracion'), (req, res) => {
+    if (!mockDb.telegramBots) mockDb.telegramBots = [];
+    const { nombre, token } = req.body as { nombre: string; token: string };
+    if (!nombre || !token) return res.status(400).json({ error: 'nombre y token requeridos' });
+    const bot: TelegramBot = {
+      id: 'TG-' + Date.now(),
+      nombre, token,
+      activo: true,
+      status: 'sin_configurar',
+    };
+    mockDb.telegramBots.push(bot);
+    saveMockDb(mockDb);
+    res.json({ ...bot, token: maskToken(bot.token) });
+  });
+
+  /** PATCH /api/canales/telegram/:id */
+  app.patch('/api/canales/telegram/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const bot = (mockDb.telegramBots || []).find(x => x.id === req.params.id);
+    if (!bot) return res.status(404).json({ error: 'Bot no encontrado' });
+    if (req.body.nombre) bot.nombre = req.body.nombre;
+    if (req.body.token && !req.body.token.startsWith('***')) bot.token = req.body.token;
+    if (req.body.activo !== undefined) bot.activo = req.body.activo;
+    saveMockDb(mockDb);
+    res.json({ ...bot, token: maskToken(bot.token) });
+  });
+
+  /** DELETE /api/canales/telegram/:id */
+  app.delete('/api/canales/telegram/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const before = (mockDb.telegramBots || []).length;
+    mockDb.telegramBots = (mockDb.telegramBots || []).filter(x => x.id !== req.params.id);
+    if (mockDb.telegramBots.length === before) return res.status(404).json({ error: 'Bot no encontrado' });
+    saveMockDb(mockDb);
+    res.json({ ok: true });
+  });
+
+  /** POST /api/canales/telegram/:id/test — verify token via Telegram Bot API */
+  app.post('/api/canales/telegram/:id/test', requireRole('gerente', 'administracion'), async (req, res) => {
+    const bot = (mockDb.telegramBots || []).find(x => x.id === req.params.id);
+    if (!bot) return res.status(404).json({ error: 'Bot no encontrado' });
+    if (!bot.token) { bot.status = 'sin_configurar'; saveMockDb(mockDb); return res.json({ ok: false, error: 'Token no configurado' }); }
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${bot.token}/getMe`);
+      const data = await r.json() as any;
+      if (data.ok && data.result) {
+        bot.status      = 'activo';
+        bot.botUsername = data.result.username;
+        bot.botName     = data.result.first_name;
+        bot.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: true, botUsername: bot.botUsername, botName: bot.botName });
+      } else {
+        bot.status = 'error';
+        bot.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: false, error: data.description || 'Token inválido' });
+      }
+    } catch (e: any) {
+      bot.status = 'error';
+      saveMockDb(mockDb);
+      return res.json({ ok: false, error: e.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  FACEBOOK PAGES — CRUD + Test
+  // ═══════════════════════════════════════════════════════════════
+
+  /** GET /api/fb/accounts — list all (tokens masked) */
+  app.get('/api/fb/accounts', (_req, res) => {
+    const accounts = (mockDb.fbAccounts || []).map(a => ({
+      ...a,
+      accessToken: maskToken(a.accessToken),
+    }));
+    res.json(accounts);
+  });
+
+  /** POST /api/fb/accounts — create account */
+  app.post('/api/fb/accounts', requireRole('gerente', 'administracion'), (req, res) => {
+    if (!mockDb.fbAccounts) mockDb.fbAccounts = [];
+    const body = req.body as Partial<FBAccount>;
+    const newAccount: FBAccount = {
+      id: 'FB-' + Date.now(),
+      nombre:      body.nombre      || 'Nueva página FB',
+      pageId:      body.pageId      || '',
+      accessToken: body.accessToken || '',
+      tipo:        body.tipo        || 'marketing',
+      activo:      body.activo      !== false,
+      status:      (body.pageId && body.accessToken) ? 'activo' : 'sin_configurar',
+    };
+    mockDb.fbAccounts.push(newAccount);
+    saveMockDb(mockDb);
+    audit((req as any).sess?.uid || 'system', (req as any).sess?.email || '', 'FB_ACCOUNT_CREATE', 'fb_accounts', { nombre: newAccount.nombre, tipo: newAccount.tipo });
+    res.json({ ...newAccount, accessToken: maskToken(newAccount.accessToken) });
+  });
+
+  /** PATCH /api/fb/accounts/:id — update account */
+  app.patch('/api/fb/accounts/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const account = (mockDb.fbAccounts || []).find(x => x.id === req.params.id);
+    if (!account) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    const { nombre, pageId, accessToken, tipo, activo } = req.body;
+    if (nombre      !== undefined) account.nombre      = nombre;
+    if (pageId      !== undefined) account.pageId      = pageId;
+    if (accessToken !== undefined && !accessToken.startsWith('***')) account.accessToken = accessToken;
+    if (tipo        !== undefined) account.tipo        = tipo;
+    if (activo      !== undefined) account.activo      = activo;
+    account.status = (account.pageId && account.accessToken) ? (account.status === 'error' ? 'error' : 'activo') : 'sin_configurar';
+    saveMockDb(mockDb);
+    audit((req as any).sess?.uid || 'system', (req as any).sess?.email || '', 'FB_ACCOUNT_UPDATE', 'fb_accounts', { id: account.id, nombre: account.nombre });
+    res.json({ ...account, accessToken: maskToken(account.accessToken) });
+  });
+
+  /** DELETE /api/fb/accounts/:id */
+  app.delete('/api/fb/accounts/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const before = (mockDb.fbAccounts || []).length;
+    mockDb.fbAccounts = (mockDb.fbAccounts || []).filter(x => x.id !== req.params.id);
+    if (mockDb.fbAccounts.length === before) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    saveMockDb(mockDb);
+    audit((req as any).sess?.uid || 'system', (req as any).sess?.email || '', 'FB_ACCOUNT_DELETE', 'fb_accounts', { id: req.params.id });
+    res.json({ ok: true });
+  });
+
+  /** POST /api/fb/accounts/:id/test — verify Page Access Token via Graph API */
+  app.post('/api/fb/accounts/:id/test', requireRole('gerente', 'administracion'), async (req, res) => {
+    const account = (mockDb.fbAccounts || []).find(x => x.id === req.params.id);
+    if (!account) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    if (!account.pageId || !account.accessToken) {
+      account.status = 'sin_configurar';
+      saveMockDb(mockDb);
+      return res.json({ ok: false, error: 'Page ID o Access Token no configurados' });
+    }
+    try {
+      const r = await fetch(`https://graph.facebook.com/v18.0/${account.pageId}?fields=id,name,category`, {
+        headers: { Authorization: `Bearer ${account.accessToken}` },
+      });
+      const data = await r.json() as any;
+      if (r.ok && data.id) {
+        account.status    = 'activo';
+        account.pageName  = data.name || '';
+        account.category  = data.category || '';
+        account.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: true, pageName: account.pageName, category: account.category });
       } else {
         account.status = 'error';
         account.lastChecked = new Date().toISOString();
