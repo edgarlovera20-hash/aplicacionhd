@@ -40,15 +40,61 @@ async function startServer() {
   // ── Seguridad: cabeceras + compresión ─────────────────────────────────────
   app.use(
     helmet({
-      // CSP deshabilitado: la app embebe scripts inline (Vite dev) y conecta a
-      // dominios externos (Gemini, OpenAI, Twilio). Si se quiere endurecer, hay
-      // que listar todos los origins permitidos. Por ahora solo otras cabeceras.
-      contentSecurityPolicy: false,
+      // En dev: CSP deshabilitado (Vite inyecta scripts inline).
+      // En producción: habilitado con política estricta.
+      contentSecurityPolicy: IS_PROD ? {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc:  ["'self'"],
+          styleSrc:   ["'self'", "'unsafe-inline'"],  // Tailwind inline styles
+          imgSrc:     ["'self'", "data:", "blob:"],
+          connectSrc: ["'self'",
+            "https://generativelanguage.googleapis.com",
+            "https://api.openai.com",
+            "https://api.anthropic.com",
+            "https://api.twilio.com",
+          ],
+          fontSrc:    ["'self'"],
+          objectSrc:  ["'none'"],
+          frameSrc:   ["'none'"],
+          upgradeInsecureRequests: IS_PROD ? [] : null,
+        },
+      } : false,
       crossOriginEmbedderPolicy: false,
     })
   );
   app.use(compression());
   app.use(express.json({ limit: '10mb' }));
+
+  // ── Rate limiting global (aplicado aquí, ANTES de cualquier ruta) ────────
+  // IMPORTANTE: deben estar aquí para que Express los ejecute antes de los handlers.
+  const rateCounts = new Map<string, { count: number; reset: number }>();
+  const rateLimit = (max: number, windowMs: number) =>
+    (req: any, res: any, next: any) => {
+      const key = req.ip || 'unknown';
+      const now = Date.now();
+      const entry = rateCounts.get(key);
+      if (!entry || now > entry.reset) {
+        rateCounts.set(key, { count: 1, reset: now + windowMs });
+        return next();
+      }
+      entry.count++;
+      if (entry.count > max) return res.status(429).json({ error: 'Demasiadas solicitudes, espera un momento' });
+      next();
+    };
+
+  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
+  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
+  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
+  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini/Claude
+  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads
+  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
+  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
+  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
+  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
+  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
+  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
+  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
 
   // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
   const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
@@ -461,22 +507,6 @@ async function startServer() {
     });
   };
 
-  // ── In-memory rate limiter ────────────────────────────────────────────────
-  const rateCounts = new Map<string, { count: number; reset: number }>();
-  const rateLimit = (max: number, windowMs: number) =>
-    (req: any, res: any, next: any) => {
-      const key = req.ip || 'unknown';
-      const now = Date.now();
-      const entry = rateCounts.get(key);
-      if (!entry || now > entry.reset) {
-        rateCounts.set(key, { count: 1, reset: now + windowMs });
-        return next();
-      }
-      entry.count++;
-      if (entry.count > max) return res.status(429).json({ error: 'Demasiadas solicitudes, espera un momento' });
-      next();
-    };
-
   // ── Audit helper ─────────────────────────────────────────────────────────
   const audit = (uid: string, email: string, accion: string, modulo: string, detalles?: any) => {
     if (!mockDb.auditLog) mockDb.auditLog = [];
@@ -485,15 +515,14 @@ async function startServer() {
     saveMockDb(mockDb);
   };
 
-  /** Lee la sesion de cualquier request (sin requerir auth). */
+  /** Lee la sesión de cualquier request (sin requerir auth).
+   *  SEGURIDAD: si no hay token válido devuelve 'anonymous' sin leer headers del cliente
+   *  para evitar que el audit log sea falsificado. */
   const peekSession = (req: any): { uid: string; email: string; role?: string } => {
     const token = (req.headers?.authorization || '').replace('Bearer ', '');
     const sess = token ? sessionStore.get(token) : null;
     if (sess && Date.now() < sess.exp) return { uid: sess.uid, email: sess.email, role: sess.role };
-    // Fallback: aceptamos identidad declarada en headers para clientes anonimos
-    const headerUid   = String(req.headers?.['x-user-uid']   || req.body?._actor_uid   || 'anonymous');
-    const headerEmail = String(req.headers?.['x-user-email'] || req.body?._actor_email || '');
-    return { uid: headerUid, email: headerEmail };
+    return { uid: 'anonymous', email: '' };
   };
 
   // ── Notification helper ───────────────────────────────────────────────────
@@ -593,7 +622,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/ventas", async (req, res) => {
+  app.get("/api/ventas", requireRole('gerente', 'administracion', 'supervisor', 'vendedor'), async (req, res) => {
     try {
       if (isDbConnected) {
         const { rows } = await pool.query("SELECT * FROM ventas ORDER BY created_at DESC");
@@ -606,7 +635,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ventas", async (req, res) => {
+  app.post("/api/ventas", requireRole('gerente', 'administracion', 'supervisor', 'vendedor'), async (req, res) => {
     try {
       const { folio, estado, paqueteNombre, nombres, telefonoTitular, rentaMensual, ...data } = req.body;
       const isUpdate = !!mockDb.ventas.find(v => v.folio === folio);
@@ -671,7 +700,7 @@ async function startServer() {
   };
 
   // POST /api/twilio/sms
-  app.post("/api/twilio/sms", async (req, res) => {
+  app.post("/api/twilio/sms", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), async (req, res) => {
     try {
       const { to, message } = req.body as { to: string; message: string };
       if (!to || !message) return res.status(400).json({ error: "Faltan: to, message" });
@@ -685,7 +714,7 @@ async function startServer() {
   });
 
   // POST /api/twilio/whatsapp
-  app.post("/api/twilio/whatsapp", async (req, res) => {
+  app.post("/api/twilio/whatsapp", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), async (req, res) => {
     try {
       const { to, message } = req.body as { to: string; message: string };
       if (!to || !message) return res.status(400).json({ error: "Faltan: to, message" });
@@ -701,7 +730,7 @@ async function startServer() {
   });
 
   // POST /api/twilio/call
-  app.post("/api/twilio/call", async (req, res) => {
+  app.post("/api/twilio/call", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), async (req, res) => {
     try {
       const { to, twiml, callbackUrl } = req.body as { to: string; twiml?: string; callbackUrl?: string };
       if (!to) return res.status(400).json({ error: "Falta: to" });
@@ -950,7 +979,7 @@ async function startServer() {
   });
 
   // GET /api/voice/log — ultimas N entradas de la bitacora en memoria
-  app.get("/api/voice/log", (req, res) => {
+  app.get("/api/voice/log", requireRole('gerente', 'administracion', 'supervisor'), (req, res) => {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || "50"), 10) || 50, 1), 100);
     res.json({ count: voiceCallLog.length, entries: voiceCallLog.slice(0, limit) });
   });
@@ -1469,6 +1498,10 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
     next();
   };
   app.use('/uploads/expedientes', expedienteStaticAuth, express.static(UPLOADS_ROOT));
+
+  // ── RBAC global para todo /api/admin/* ──────────────────────────────────
+  // Un único middleware aquí protege TODAS las rutas que empiecen con /api/admin.
+  app.use('/api/admin', requireRole('gerente', 'administracion'));
 
   // ================= ADMIN: USUARIOS =================
 
@@ -2017,11 +2050,13 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   });
 
   // POST /api/agents/:id/whatsapp/stub-connect — DEV ONLY: simulate scan
-  app.post("/api/agents/:id/whatsapp/stub-connect", (req, res) => {
-    const ok = whatsappEngine.stubMarkConnected(req.params.id);
-    if (!ok) return res.status(400).json({ error: 'Solo disponible en modo stub' });
-    res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
-  });
+  if (!IS_PROD) {
+    app.post("/api/agents/:id/whatsapp/stub-connect", (req, res) => {
+      const ok = whatsappEngine.stubMarkConnected(req.params.id);
+      if (!ok) return res.status(400).json({ error: 'Solo disponible en modo stub' });
+      res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
+    });
+  }
 
   // POST /api/agents/:id/whatsapp/disconnect
   app.post("/api/agents/:id/whatsapp/disconnect", async (req, res) => {
@@ -2646,8 +2681,8 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     }
   });
 
-  /** Eliminar huella de un usuario */
-  app.delete("/api/webauthn/credential", (req, res) => {
+  /** Eliminar huella de un usuario — solo el propio usuario o un gerente */
+  app.delete("/api/webauthn/credential", requireRole('gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'), (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Falta email" });
     const before = getWaCreds().length;
@@ -2659,7 +2694,7 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
   // SEGUIMIENTO A CLIENTES — Clientes
   // ═══════════════════════════════════════════════
 
-  app.get("/api/seguimiento/clientes", (req, res) => {
+  app.get("/api/seguimiento/clientes", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     let list = mockDb.clientesSeguimiento || [];
     const { supervisor_id, agente_id, estado_pago, q } = req.query as any;
 
@@ -2672,7 +2707,7 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     res.json(list);
   });
 
-  app.post("/api/seguimiento/clientes", (req, res) => {
+  app.post("/api/seguimiento/clientes", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     const c = req.body as ClienteSeguimiento;
     c.id = "CLI-" + Date.now();
     c.mensajes_sin_leer = 0;
@@ -2682,7 +2717,7 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     res.json(c);
   });
 
-  app.patch("/api/seguimiento/clientes/:id", (req, res) => {
+  app.patch("/api/seguimiento/clientes/:id", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     const c = (mockDb.clientesSeguimiento || []).find(x => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: "Cliente no encontrado" });
     Object.assign(c, req.body);
@@ -2690,7 +2725,7 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     res.json(c);
   });
 
-  app.delete("/api/seguimiento/clientes/:id", (req, res) => {
+  app.delete("/api/seguimiento/clientes/:id", requireRole('gerente', 'administracion'), (req, res) => {
     mockDb.clientesSeguimiento = (mockDb.clientesSeguimiento || []).filter(x => x.id !== req.params.id);
     saveMockDb(mockDb);
     res.json({ ok: true });
@@ -2774,10 +2809,19 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
 
       // Validar firma (X-Hub-Signature-256)
       const appSecret = process.env.WA_APP_SECRET;
+      if (IS_PROD && !appSecret) {
+        console.error("[SEGURIDAD] WA_APP_SECRET no configurado en producción — rechazando webhook");
+        return; // en prod, sin secret = rechazar siempre
+      }
       if (appSecret) {
         const sig = req.headers["x-hub-signature-256"] as string;
         const expected = "sha256=" + crypto.createHmac("sha256", appSecret).update(JSON.stringify(body)).digest("hex");
-        if (sig !== expected) return;
+        // Usar timingSafeEqual para evitar timing attacks
+        try {
+          const sigBuf = Buffer.from(sig || "");
+          const expBuf = Buffer.from(expected);
+          if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return;
+        } catch { return; }
       }
 
       const entry   = body?.entry?.[0];
@@ -3013,7 +3057,7 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // SEGUIMIENTO — Export CSV
   // ═══════════════════════════════════════════════
 
-  app.get("/api/seguimiento/export/clientes", (_req, res) => {
+  app.get("/api/seguimiento/export/clientes", requireRole('gerente', 'administracion'), (_req, res) => {
     const cs = mockDb.clientesSeguimiento || [];
     const headers = ["id","nombre","telefono","email","folio","paquete","renta","estado_pago","fecha_alta","fecha_ultimo_pago","agente_nombre","beneficio_activado","domiciliado","colonia","municipio"];
     const rows = cs.map(c => headers.map(h => `"${String((c as any)[h] ?? "").replace(/"/g,'""')}"`).join(","));
@@ -3102,7 +3146,9 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // Restringir CORS al origen real de la app en producción
+    const allowedOrigin = process.env.APP_ORIGIN || (IS_PROD ? '' : '*');
+    if (allowedOrigin) res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.flushHeaders();
 
     const rol = (req.query.rol as string) || undefined;
@@ -3451,7 +3497,7 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // ═══════════════════════════════════════════════════════════════════════════
   //  BÚSQUEDA GLOBAL
   // ═══════════════════════════════════════════════════════════════════════════
-  app.get('/api/search', (req, res) => {
+  app.get('/api/search', requireRole('gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'), (req, res) => {
     const { q } = req.query as any;
     if (!q || q.length < 2) return res.json([]);
     const ql = q.toLowerCase();
@@ -3669,23 +3715,6 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     });
     res.json({ ok: true });
   });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  ADMIN: aplicar RBAC a rutas sensibles
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Rate-limits — protegen endpoints que invocan IA, OCR o tocan datos críticos.
-  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
-  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
-  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
-  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini
-  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads de expediente (INE, video, audio)
-  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
-  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
-  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
-  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
-  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
-  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
-  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
 
   // ================= VITE MIDDLEWARE (dev) / STATIC (prod) =================
   if (process.env.NODE_ENV !== "production") {
