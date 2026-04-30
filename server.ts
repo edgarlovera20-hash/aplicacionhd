@@ -51,7 +51,7 @@ async function startServer() {
     })
   );
   app.use(compression());
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '20mb' }));
 
   // ── Rate limiting global (aplicado aquí, ANTES de cualquier ruta) ────────
   // IMPORTANTE: deben estar aquí para que Express los ejecute antes de los handlers.
@@ -99,7 +99,7 @@ async function startServer() {
   //  - Vision (OCR INE/CURP/comprobante): claude-haiku-4-5 — rápido y barato (~$1/$5 per M)
   //  - Texto general (chat, resúmenes):    claude-sonnet-4-6 — 1M ctx, adaptive thinking
   const CLAUDE_TEXT_MODEL   = process.env.CLAUDE_TEXT_MODEL   || "claude-sonnet-4-6";
-  const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5";
+  const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5-20251001";
 
   const providers: string[] = [];
   if (anthropicClient)        providers.push(`Claude (${CLAUDE_TEXT_MODEL} / ${CLAUDE_VISION_MODEL})`);
@@ -1277,32 +1277,85 @@ El checklist debe tener entre 5 y 8 pasos relevantes para ${issueType || 'valida
         return res.status(400).json({ error: 'Archivo demasiado grande para OCR (máx. ~15 MB)' });
       }
 
-      const ocrPrompt = `Eres un sistema OCR especializado en documentos mexicanos. Analiza CUIDADOSAMENTE esta imagen de un ${docType.toUpperCase()}.
+      const ocrPrompts: Record<string, string> = {
+        ine: `Eres un sistema OCR especializado en credenciales INE/IFE mexicanas.
+Analiza CUIDADOSAMENTE esta imagen. Puede ser el FRENTE o el REVERSO de la credencial.
 
 INSTRUCCIONES CRÍTICAS:
-1. Lee cada carácter con precisión. Los documentos INE tienen texto impreso claro.
-2. El CURP tiene exactamente 18 caracteres alfanuméricos.
-3. El folio/clave de elector (INE) tiene 18-20 caracteres.
-4. Lee la dirección completa del reverso si es INE.
+1. Lee cada carácter con máxima precisión — el texto impreso es claro.
+2. CURP: exactamente 18 caracteres alfanuméricos en mayúsculas (ej: LOEJ850312HDFVRG09).
+3. Clave de elector/folio: 18-20 caracteres alfanuméricos (suele estar en el reverso).
+4. La dirección SIEMPRE está en el REVERSO de la INE — si ves frente, los campos de dirección irán vacíos.
+5. No inventes datos. Si un campo no es legible o no está en la imagen, usa "".
 
-Extrae y devuelve EXACTAMENTE este JSON (sin markdown, sin texto adicional):
+Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
 {
-  "nombres": "nombre(s) de pila completos",
+  "nombres": "nombre(s) de pila tal como aparecen",
   "apellidoPaterno": "primer apellido",
   "apellidoMaterno": "segundo apellido",
-  "curp": "CURP de 18 caracteres en mayúsculas",
-  "folioIne": "folio o clave de elector si es INE, sino vacío",
+  "curp": "CURP 18 caracteres mayúsculas o vacío",
+  "folioIne": "clave de elector o folio 18-20 chars o vacío",
+  "calle": "nombre de la calle o vacío",
+  "numeroExterior": "número exterior o vacío",
+  "numeroInterior": "número interior o vacío",
+  "colonia": "nombre de la colonia o vacío",
+  "codigoPostal": "5 dígitos o vacío",
+  "ciudad": "municipio o ciudad o vacío",
+  "delegacion": "delegación, alcaldía o estado o vacío"
+}`,
+
+        curp: `Eres un sistema OCR especializado en documentos CURP mexicanos.
+Analiza esta imagen y extrae ÚNICAMENTE el CURP y el nombre completo si están visibles.
+
+INSTRUCCIONES:
+1. El CURP tiene EXACTAMENTE 18 caracteres alfanuméricos en mayúsculas.
+2. Formato típico: 4 letras + 6 dígitos fecha + 1 letra sexo + 2 letras estado + 3 letras consonantes + 2 dígitos.
+3. Los demás campos van vacíos — un documento CURP no tiene dirección.
+
+Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
+{
+  "nombres": "nombre(s) de pila o vacío",
+  "apellidoPaterno": "primer apellido o vacío",
+  "apellidoMaterno": "segundo apellido o vacío",
+  "curp": "CURP 18 caracteres mayúsculas",
+  "folioIne": "",
+  "calle": "",
+  "numeroExterior": "",
+  "numeroInterior": "",
+  "colonia": "",
+  "codigoPostal": "",
+  "ciudad": "",
+  "delegacion": ""
+}`,
+
+        comprobante: `Eres un sistema OCR especializado en comprobantes de domicilio mexicanos (recibos de luz CFE, agua SACMEX/CAEM, teléfono, gas, internet).
+Analiza esta imagen y extrae la dirección del titular.
+
+INSTRUCCIONES CRÍTICAS:
+1. Busca la sección "DOMICILIO", "DIRECCIÓN DEL SERVICIO" o "DIRECCIÓN DEL USUARIO".
+2. Separa correctamente: calle, número exterior, número interior, colonia, C.P., municipio/ciudad, estado.
+3. El código postal son EXACTAMENTE 5 dígitos.
+4. No extraigas CURP ni folio INE — estos campos van vacíos en un comprobante.
+5. Si un campo no aparece claramente, usa "".
+
+Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
+{
+  "nombres": "",
+  "apellidoPaterno": "",
+  "apellidoMaterno": "",
+  "curp": "",
+  "folioIne": "",
   "calle": "nombre de la calle",
   "numeroExterior": "número exterior",
   "numeroInterior": "número interior o vacío",
   "colonia": "nombre de la colonia",
   "codigoPostal": "5 dígitos",
-  "ciudad": "ciudad o municipio",
-  "delegacion": "delegación o alcaldía o estado"
-}
+  "ciudad": "municipio o ciudad",
+  "delegacion": "alcaldía, delegación o estado"
+}`,
+      };
 
-Si un campo NO ES VISIBLE en la imagen, usa cadena vacía "".
-RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
+      const ocrPrompt = ocrPrompts[docType] ?? ocrPrompts['ine'];
 
       const text = await geminiGenerate([
         ocrPrompt,
