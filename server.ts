@@ -59,7 +59,7 @@ async function startServer() {
           fontSrc:    ["'self'"],
           objectSrc:  ["'none'"],
           frameSrc:   ["'none'"],
-          upgradeInsecureRequests: IS_PROD ? [] : null,
+          upgradeInsecureRequests: null, // Deshabilitado: sin HTTPS todavía. Habilitar al agregar Caddy/TLS.
         },
       } : false,
       crossOriginEmbedderPolicy: false,
