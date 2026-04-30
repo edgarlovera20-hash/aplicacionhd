@@ -191,7 +191,7 @@ async function startServer() {
       const keyIdx = (currentGeminiIdx + attempt) % geminiKeys.length;
       try {
         const client = new GoogleGenerativeAI(geminiKeys[keyIdx]);
-        const model  = client.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model  = client.getGenerativeModel({ model: "gemini-2.0-flash" });
         const result = await model.generateContent(promptOrParts as any);
         currentGeminiIdx = keyIdx;
         return result.response.text();
