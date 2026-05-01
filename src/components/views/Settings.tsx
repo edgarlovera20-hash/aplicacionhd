@@ -784,7 +784,10 @@ const ALL_COLUMNS = [
   { id: 'estado_geo',    label: 'Estado (Geo)',       group: 'Ubicación' },
 ];
 
-const getToken = () => JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || '';
+const getToken = () => {
+  try { return JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || ''; }
+  catch { return ''; }
+};
 const authHdr  = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` });
 
 function ColumnasTab() {

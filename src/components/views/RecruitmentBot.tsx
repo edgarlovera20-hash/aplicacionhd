@@ -122,8 +122,9 @@ export default function RecruitmentBot() {
     try {
       const data = await api.getCandidates();
       // Si no hay datos en server, usar mock
-      if (data.length === 0) setCandidates(MOCK_CANDIDATES);
-      else setCandidates(data);
+      const safe = Array.isArray(data) ? data : [];
+      if (safe.length === 0) setCandidates(MOCK_CANDIDATES);
+      else setCandidates(safe);
     } catch {
       setCandidates(MOCK_CANDIDATES);
     }

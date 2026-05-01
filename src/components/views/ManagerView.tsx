@@ -95,7 +95,8 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
     if (q.length < 2) { setSearchResults([]); return; }
     try {
       const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-      setSearchResults(await r.json());
+      const data = await r.json();
+      setSearchResults(Array.isArray(data) ? data : []);
     } catch { setSearchResults([]); }
   }, []);
 

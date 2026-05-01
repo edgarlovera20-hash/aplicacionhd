@@ -218,14 +218,18 @@ export const authenticateWithBiometric = async (
    Limpiar huella local (no borra del servidor)
 ───────────────────────────────────────────── */
 export const clearLocalBiometric = (email: string): void => {
-  const stored = JSON.parse(localStorage.getItem('wa_registered') || '[]') as string[];
-  localStorage.setItem('wa_registered', JSON.stringify(stored.filter(e => e !== email)));
+  try {
+    const stored = JSON.parse(localStorage.getItem('wa_registered') || '[]') as string[];
+    localStorage.setItem('wa_registered', JSON.stringify(stored.filter(e => e !== email)));
+  } catch { /* storage unavailable or corrupt */ }
 };
 
 /* ─────────────────────────────────────────────
    Check rápido local (sin llamada al servidor)
 ───────────────────────────────────────────── */
 export const isLocallyRegistered = (email: string): boolean => {
-  const stored = JSON.parse(localStorage.getItem('wa_registered') || '[]') as string[];
-  return stored.includes(email);
+  try {
+    const stored = JSON.parse(localStorage.getItem('wa_registered') || '[]') as string[];
+    return stored.includes(email);
+  } catch { return false; }
 };
