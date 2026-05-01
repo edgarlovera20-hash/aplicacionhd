@@ -8,6 +8,7 @@ import {
   XCircle, Loader2, CloudUpload, Send, Database, Layers,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { api } from '../../api';
 
 /* ─────────────────────────────────────────────
    TIPOS
@@ -33,20 +34,22 @@ interface Expense {
   notas?: string;
 }
 
-const ROLES = ['admin', 'supervisor', 'vendedor', 'reclutador', 'cobranza'];
+const ROLES = ['gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'];
 const ROLE_LABELS: Record<string, string> = {
-  admin: 'Administrador',
-  supervisor: 'Supervisor',
-  vendedor: 'Vendedor',
-  reclutador: 'Reclutador',
-  cobranza: 'Cobranza',
+  gerente:        'Gerente',
+  administracion: 'Administración',
+  supervisor:     'Supervisor',
+  vendedor:       'Vendedor',
+  reclutadora:    'Reclutadora',
+  seguimiento:    'Seguimiento',
 };
 const ROLE_COLORS: Record<string, string> = {
-  admin: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
-  supervisor: 'bg-blue-500/15 text-blue-300 border-blue-500/30',
-  vendedor: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-  reclutador: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  cobranza: 'bg-red-500/15 text-red-300 border-red-500/30',
+  gerente:        'bg-purple-500/15 text-purple-300 border-purple-500/30',
+  administracion: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
+  supervisor:     'bg-blue-500/15 text-blue-300 border-blue-500/30',
+  vendedor:       'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+  reclutadora:    'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  seguimiento:    'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
 };
 const EXPENSE_CATS = ['Operativo', 'Marketing', 'Logística', 'RRHH', 'Tecnología', 'Otros'];
 
@@ -109,71 +112,88 @@ export default function Settings() {
 }
 
 /* ═══════════════════════════════════════════
-   TAB — GESTIÓN DE USUARIOS
+   TAB — GESTIÓN DE USUARIOS + INVITACIONES
 ═══════════════════════════════════════════ */
+interface Invitation { id?: number; token: string; email: string; role: string; nombres?: string; expiresAt?: string; expires_at?: string; used?: boolean; created_at?: string; }
+
 function UsuariosTab() {
   const [users, setUsers]           = useState<AdminUser[]>([]);
+  const [invites, setInvites]       = useState<Invitation[]>([]);
   const [loading, setLoading]       = useState(true);
   const [search, setSearch]         = useState('');
   const [roleFilter, setRoleFilter] = useState('');
-  const [showModal, setShowModal]   = useState(false);
-  const [editing, setEditing]       = useState<AdminUser | null>(null);
+  const [showInvite, setShowInvite] = useState(false);
+  const [showEdit, setShowEdit]     = useState<AdminUser | null>(null);
   const [resetUid, setResetUid]     = useState<string | null>(null);
   const [newPwd, setNewPwd]         = useState('');
   const [showPwd, setShowPwd]       = useState(false);
   const [toast, setToast]           = useState('');
+  const [copiedToken, setCopiedToken] = useState('');
+  const [subTab, setSubTab]         = useState<'usuarios' | 'invitaciones'>('usuarios');
 
   const notify = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
 
-  const load = async () => {
+  const loadUsers = async () => {
     setLoading(true);
-    try {
-      const r = await fetch('/api/admin/users');
-      setUsers(await r.json());
-    } catch { notify('Error cargando usuarios'); }
+    try { setUsers(await api.get('/admin/users')); } catch { notify('Error cargando usuarios'); }
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  const loadInvites = async () => {
+    try { setInvites(await api.get('/invitations')); } catch { /* ignore */ }
+  };
+
+  useEffect(() => { loadUsers(); loadInvites(); }, []);
 
   const filtered = users.filter(u =>
-    (!search || u.nombres.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase())) &&
+    (!search || u.nombres?.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase())) &&
     (!roleFilter || u.role === roleFilter)
   );
 
   const toggleStatus = async (u: AdminUser) => {
     const newStatus = u.status === 'active' ? 'inactive' : 'active';
-    await fetch(`/api/admin/users/${u.uid}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus })
-    });
+    await api.patch(`/admin/users/${u.uid}`, { status: newStatus });
     setUsers(prev => prev.map(x => x.uid === u.uid ? { ...x, status: newStatus } : x));
     notify(`Usuario ${newStatus === 'active' ? 'activado' : 'desactivado'}`);
   };
 
   const deleteUser = async (uid: string) => {
-    if (!confirm('¿Eliminar este usuario?')) return;
-    await fetch(`/api/admin/users/${uid}`, { method: 'DELETE' });
+    if (!confirm('¿Eliminar este usuario permanentemente?')) return;
+    await api.del(`/admin/users/${uid}`);
     setUsers(prev => prev.filter(x => x.uid !== uid));
     notify('Usuario eliminado');
   };
 
+  const revokeInvite = async (token: string) => {
+    if (!confirm('¿Revocar esta invitación?')) return;
+    await api.del(`/invitations/${token}`);
+    setInvites(prev => prev.filter(x => x.token !== token));
+    notify('Invitación revocada');
+  };
+
   const handleResetPwd = async () => {
     if (!resetUid || !newPwd) return;
-    await fetch(`/api/admin/users/${resetUid}/reset-password`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: newPwd })
-    });
+    if (newPwd.length < 8 || !/[A-Z]/.test(newPwd) || !/[0-9]/.test(newPwd)) {
+      notify('Mín. 8 caracteres, 1 mayúscula y 1 número');
+      return;
+    }
+    await api.post(`/admin/users/${resetUid}/reset-password`, { newPassword: newPwd });
     setResetUid(null); setNewPwd('');
     notify('Contraseña restablecida');
   };
 
+  const copyToken = (token: string) => {
+    navigator.clipboard.writeText(token);
+    setCopiedToken(token);
+    setTimeout(() => setCopiedToken(''), 2000);
+  };
+
   const active   = users.filter(u => u.status === 'active').length;
   const inactive = users.filter(u => u.status === 'inactive').length;
+  const pendingInvites = invites.filter(i => !i.used).length;
 
   return (
     <div className="space-y-5">
-      {/* Toast */}
       {toast && (
         <div className="fixed top-6 right-6 z-50 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-2xl text-sm font-medium flex items-center gap-2 animate-fade-in">
           <Check className="w-4 h-4" />{toast}
@@ -181,12 +201,13 @@ function UsuariosTab() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         {[
-          { label: 'Total', val: users.length, color: 'text-zinc-100' },
-          { label: 'Activos', val: active, color: 'text-emerald-400' },
-          { label: 'Inactivos', val: inactive, color: 'text-red-400' },
-          { label: 'Roles', val: new Set(users.map(u => u.role)).size, color: 'text-indigo-400' },
+          { label: 'Total',        val: users.length,   color: 'text-zinc-100' },
+          { label: 'Activos',      val: active,         color: 'text-emerald-400' },
+          { label: 'Inactivos',    val: inactive,       color: 'text-red-400' },
+          { label: 'Roles',        val: new Set(users.map(u => u.role)).size, color: 'text-indigo-400' },
+          { label: 'Invitaciones', val: pendingInvites, color: 'text-amber-400' },
         ].map(s => (
           <div key={s.label} className="bg-zinc-950/50 border border-white/5 rounded-xl px-4 py-3">
             <p className="text-[10px] uppercase tracking-wider font-medium text-zinc-500 mb-1">{s.label}</p>
@@ -195,108 +216,160 @@ function UsuariosTab() {
         ))}
       </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap gap-3 items-center">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-          <input
-            value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar por nombre o email..."
-            className="w-full pl-9 pr-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-          />
-        </div>
-        <select
-          value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
-          className="px-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-300 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-        >
-          <option value="">Todos los roles</option>
-          {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-        </select>
-        <button onClick={load} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
-          <RefreshCw className="w-4 h-4" />
+      {/* Sub-tabs: Usuarios / Invitaciones */}
+      <div className="flex gap-2">
+        <button onClick={() => setSubTab('usuarios')} className={cn("px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all", subTab === 'usuarios' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white hover:bg-white/5')}>
+          <Users className="w-3.5 h-3.5 inline mr-1.5" />Usuarios
         </button>
-        <button
-          onClick={() => { setEditing(null); setShowModal(true); }}
-          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-indigo-500/20"
-        >
-          <Plus className="w-4 h-4" /> Nuevo Usuario
+        <button onClick={() => setSubTab('invitaciones')} className={cn("px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all", subTab === 'invitaciones' ? 'bg-amber-600 text-white' : 'text-zinc-400 hover:text-white hover:bg-white/5')}>
+          <Send className="w-3.5 h-3.5 inline mr-1.5" />Invitaciones {pendingInvites > 0 && <span className="ml-1 bg-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded-full text-[9px]">{pendingInvites}</span>}
         </button>
       </div>
 
-      {/* Tabla */}
-      {loading ? (
-        <div className="text-center py-16 text-zinc-500">Cargando usuarios...</div>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-white/5">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-zinc-950/60">
-              <tr>
-                {['Nombre', 'Email', 'Rol', 'Estado', 'Alta', 'Acciones'].map(h => (
-                  <th key={h} className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {filtered.length === 0 && (
-                <tr><td colSpan={6} className="py-12 text-center text-zinc-600 text-sm">Sin resultados</td></tr>
-              )}
-              {filtered.map(u => (
-                <tr key={u.uid} className="hover:bg-zinc-800/30 transition-colors">
-                  <td className="px-4 py-3.5 font-medium text-zinc-100">{u.nombres}</td>
-                  <td className="px-4 py-3.5 text-zinc-400 text-xs font-mono">{u.email}</td>
-                  <td className="px-4 py-3.5">
-                    <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border", ROLE_COLORS[u.role] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30')}>
-                      {ROLE_LABELS[u.role] || u.role}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border",
-                      u.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
-                    )}>
-                      {u.status === 'active' ? 'Activo' : 'Inactivo'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5 text-zinc-500 text-xs font-mono">
-                    {u.createdAt ? new Date(u.createdAt).toLocaleDateString('es-MX') : '—'}
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex gap-1">
-                      <button
-                        title="Editar" onClick={() => { setEditing(u); setShowModal(true); }}
-                        className="p-1.5 text-zinc-400 hover:text-indigo-400 rounded-lg hover:bg-indigo-500/10 transition-colors"
-                      ><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button
-                        title="Restablecer contraseña" onClick={() => setResetUid(u.uid)}
-                        className="p-1.5 text-zinc-400 hover:text-amber-400 rounded-lg hover:bg-amber-500/10 transition-colors"
-                      ><Key className="w-3.5 h-3.5" /></button>
-                      <button
-                        title={u.status === 'active' ? 'Desactivar' : 'Activar'} onClick={() => toggleStatus(u)}
-                        className="p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors"
-                      ><Power className="w-3.5 h-3.5" /></button>
-                      <button
-                        title="Eliminar" onClick={() => deleteUser(u.uid)}
-                        className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"
-                      ><Trash2 className="w-3.5 h-3.5" /></button>
+      {subTab === 'usuarios' && (
+        <>
+          {/* Toolbar */}
+          <div className="flex flex-wrap gap-3 items-center">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por nombre o email..."
+                className="w-full pl-9 pr-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-indigo-500/50" />
+            </div>
+            <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
+              className="px-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-300 focus:outline-none focus:ring-1 focus:ring-indigo-500/50">
+              <option value="">Todos los roles</option>
+              {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+            </select>
+            <button onClick={loadUsers} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors" title="Recargar">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+            <button onClick={() => setShowInvite(true)}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-indigo-500/20">
+              <Plus className="w-4 h-4" /> Invitar Usuario
+            </button>
+          </div>
+
+          {/* Tabla de usuarios */}
+          {loading ? (
+            <div className="text-center py-16 text-zinc-500"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />Cargando usuarios...</div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-white/5">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-zinc-950/60">
+                  <tr>
+                    {['Nombre', 'Email', 'Rol', 'Estado', 'Alta', 'Acciones'].map(h => (
+                      <th key={h} className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {filtered.length === 0 && (
+                    <tr><td colSpan={6} className="py-12 text-center text-zinc-600 text-sm">Sin resultados</td></tr>
+                  )}
+                  {filtered.map(u => (
+                    <tr key={u.uid} className="hover:bg-zinc-800/30 transition-colors">
+                      <td className="px-4 py-3.5 font-medium text-zinc-100">{u.nombres}</td>
+                      <td className="px-4 py-3.5 text-zinc-400 text-xs font-mono">{u.email}</td>
+                      <td className="px-4 py-3.5">
+                        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border", ROLE_COLORS[u.role] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30')}>
+                          {ROLE_LABELS[u.role] || u.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border",
+                          u.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
+                        )}>
+                          {u.status === 'active' ? 'Activo' : 'Inactivo'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-zinc-500 text-xs font-mono">
+                        {u.createdAt ? new Date(u.createdAt).toLocaleDateString('es-MX') : '—'}
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <div className="flex gap-1">
+                          <button title="Editar" onClick={() => setShowEdit(u)} className="p-1.5 text-zinc-400 hover:text-indigo-400 rounded-lg hover:bg-indigo-500/10 transition-colors"><Edit2 className="w-3.5 h-3.5" /></button>
+                          <button title="Restablecer contraseña" onClick={() => setResetUid(u.uid)} className="p-1.5 text-zinc-400 hover:text-amber-400 rounded-lg hover:bg-amber-500/10 transition-colors"><Key className="w-3.5 h-3.5" /></button>
+                          <button title={u.status === 'active' ? 'Desactivar' : 'Activar'} onClick={() => toggleStatus(u)} className="p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors"><Power className="w-3.5 h-3.5" /></button>
+                          <button title="Eliminar" onClick={() => deleteUser(u.uid)} className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {subTab === 'invitaciones' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-zinc-400">Invitaciones generadas por el equipo directivo. Cada token expira en 48 horas.</p>
+            <button onClick={() => setShowInvite(true)}
+              className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all">
+              <Plus className="w-4 h-4" /> Nueva Invitación
+            </button>
+          </div>
+          {invites.length === 0 ? (
+            <div className="text-center py-12 text-zinc-600 text-sm">No hay invitaciones</div>
+          ) : (
+            <div className="space-y-2">
+              {invites.map((inv, i) => {
+                const expired = inv.expires_at ? new Date(inv.expires_at) < new Date() : false;
+                return (
+                  <div key={inv.token || i} className={cn("flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-xl border transition-all",
+                    inv.used ? 'bg-emerald-500/5 border-emerald-500/10' : expired ? 'bg-red-500/5 border-red-500/10' : 'bg-zinc-950/50 border-white/5')}>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-zinc-100 truncate">{inv.email}</p>
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border", ROLE_COLORS[inv.role] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30')}>
+                          {ROLE_LABELS[inv.role] || inv.role}
+                        </span>
+                        {inv.used ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Registrado</span>
+                        ) : expired ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-red-500/15 text-red-400 border border-red-500/20">Expirada</span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-500/15 text-amber-400 border border-amber-500/20">Pendiente</span>
+                        )}
+                      </div>
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    {!inv.used && !expired && (
+                      <div className="flex gap-2 shrink-0">
+                        <button onClick={() => copyToken(inv.token)} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 transition-colors flex items-center gap-1.5">
+                          {copiedToken === inv.token ? <><Check className="w-3 h-3 text-emerald-400" /> Copiado</> : <><CloudUpload className="w-3 h-3" /> Copiar Token</>}
+                        </button>
+                        <button onClick={() => revokeInvite(inv.token)} className="px-3 py-1.5 text-xs font-medium rounded-lg text-red-400 hover:bg-red-500/10 border border-red-500/20 transition-colors">
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-zinc-600 shrink-0">
+                      {inv.expires_at ? `Expira: ${new Date(inv.expires_at).toLocaleDateString('es-MX')}` : inv.created_at ? `Creada: ${new Date(inv.created_at).toLocaleDateString('es-MX')}` : ''}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Modal Crear/Editar */}
-      {showModal && (
-        <UserModal
-          user={editing}
-          onClose={() => setShowModal(false)}
-          onSaved={(u) => {
-            if (editing) setUsers(prev => prev.map(x => x.uid === u.uid ? u : x));
-            else setUsers(prev => [...prev, u]);
-            setShowModal(false);
-            notify(editing ? 'Usuario actualizado' : 'Usuario creado');
-          }}
+      {/* Modal Editar Usuario */}
+      {showEdit && (
+        <UserEditModal
+          user={showEdit}
+          onClose={() => setShowEdit(null)}
+          onSaved={(u) => { setUsers(prev => prev.map(x => x.uid === u.uid ? u : x)); setShowEdit(null); notify('Usuario actualizado'); }}
+        />
+      )}
+
+      {/* Modal Invitar Usuario */}
+      {showInvite && (
+        <InviteModal
+          onClose={() => setShowInvite(false)}
+          onCreated={(inv) => { setInvites(prev => [inv, ...prev]); setShowInvite(false); notify('Invitación creada — comparte el token con el usuario'); }}
         />
       )}
 
@@ -305,13 +378,10 @@ function UsuariosTab() {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
             <h3 className="text-lg font-bold text-zinc-100">Restablecer Contraseña</h3>
+            <p className="text-xs text-zinc-500">Mín. 8 caracteres, 1 mayúscula y 1 número</p>
             <div className="relative">
-              <input
-                type={showPwd ? 'text' : 'password'}
-                value={newPwd} onChange={e => setNewPwd(e.target.value)}
-                placeholder="Nueva contraseña..."
-                className="w-full pr-10 px-4 py-2.5 bg-zinc-950/50 border border-white/10 rounded-xl text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-              />
+              <input type={showPwd ? 'text' : 'password'} value={newPwd} onChange={e => setNewPwd(e.target.value)} placeholder="Nueva contraseña segura..."
+                className="w-full pr-10 px-4 py-2.5 bg-zinc-950/50 border border-white/10 rounded-xl text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500/50" />
               <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500">
                 {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -327,37 +397,18 @@ function UsuariosTab() {
   );
 }
 
-function UserModal({ user, onClose, onSaved }: { user: AdminUser | null; onClose: () => void; onSaved: (u: AdminUser) => void }) {
-  const [form, setForm] = useState({
-    nombres: user?.nombres || '',
-    email:   user?.email   || '',
-    role:    user?.role    || 'vendedor',
-    password: '',
-  });
+/** Modal para editar un usuario existente */
+function UserEditModal({ user, onClose, onSaved }: { user: AdminUser; onClose: () => void; onSaved: (u: AdminUser) => void }) {
+  const [form, setForm] = useState({ nombres: user.nombres, email: user.email, role: user.role });
   const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState('');
-
+  const [err, setErr] = useState('');
   const handle = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
 
   const submit = async () => {
     if (!form.nombres || !form.email) { setErr('Nombre y email son requeridos'); return; }
-    if (!user && !form.password)      { setErr('La contraseña es requerida al crear'); return; }
     setSaving(true); setErr('');
     try {
-      let res: AdminUser;
-      if (user) {
-        const r = await fetch(`/api/admin/users/${user.uid}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nombres: form.nombres, email: form.email, role: form.role })
-        });
-        res = await r.json();
-      } else {
-        const r = await fetch('/api/admin/users', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form)
-        });
-        res = await r.json();
-      }
+      const res = await api.patch(`/admin/users/${user.uid}`, form);
       onSaved(res);
     } catch { setErr('Error al guardar'); }
     setSaving(false);
@@ -367,35 +418,93 @@ function UserModal({ user, onClose, onSaved }: { user: AdminUser | null; onClose
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
         <div className="flex justify-between items-center">
-          <h3 className="text-lg font-bold text-zinc-100">{user ? 'Editar Usuario' : 'Nuevo Usuario'}</h3>
+          <h3 className="text-lg font-bold text-zinc-100">Editar Usuario</h3>
           <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg transition-colors"><X className="w-4 h-4" /></button>
         </div>
         {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
         <div className="space-y-3">
-          <Field label="Nombre completo">
-            <input value={form.nombres} onChange={e => handle('nombres', e.target.value)} placeholder="Ej. Laura Martínez" className={inputCls} />
-          </Field>
-          <Field label="Correo electrónico">
-            <input type="email" value={form.email} onChange={e => handle('email', e.target.value)} placeholder="laura@hdreams.com" className={inputCls} />
-          </Field>
+          <Field label="Nombre completo"><input value={form.nombres} onChange={e => handle('nombres', e.target.value)} className={inputCls} /></Field>
+          <Field label="Correo electrónico"><input type="email" value={form.email} onChange={e => handle('email', e.target.value)} className={inputCls} /></Field>
           <Field label="Rol">
             <select value={form.role} onChange={e => handle('role', e.target.value)} className={inputCls}>
               {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
             </select>
           </Field>
-          {!user && (
-            <Field label="Contraseña inicial">
-              <input type="password" value={form.password} onChange={e => handle('password', e.target.value)} placeholder="Mínimo 6 caracteres" className={inputCls} />
-            </Field>
-          )}
         </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
           <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
             {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-            {saving ? 'Guardando...' : user ? 'Actualizar' : 'Crear Usuario'}
+            {saving ? 'Guardando...' : 'Actualizar'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Modal para crear una invitación (reemplaza creación directa de usuario) */
+function InviteModal({ onClose, onCreated }: { onClose: () => void; onCreated: (inv: Invitation) => void }) {
+  const [form, setForm] = useState({ email: '', role: 'vendedor', nombres: '' });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const [result, setResult] = useState<Invitation | null>(null);
+  const handle = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    if (!form.email) { setErr('Email es requerido'); return; }
+    setSaving(true); setErr('');
+    try {
+      const res = await api.post('/invitations', form);
+      setResult(res);
+      onCreated(res);
+    } catch (e: any) { setErr(e.message || 'Error al crear invitación'); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold text-zinc-100">{result ? 'Invitación Creada' : 'Invitar Nuevo Usuario'}</h3>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg transition-colors"><X className="w-4 h-4" /></button>
+        </div>
+        {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
+        {result ? (
+          <div className="space-y-3">
+            <p className="text-sm text-zinc-300">Comparte este token con <strong className="text-white">{result.email}</strong> para que se registre:</p>
+            <div className="bg-zinc-950 border border-amber-500/20 rounded-xl p-3 flex items-center gap-2">
+              <code className="flex-1 text-xs text-amber-300 font-mono break-all select-all">{result.token}</code>
+              <button onClick={() => { navigator.clipboard.writeText(result.token); }} className="shrink-0 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-lg transition-colors">Copiar</button>
+            </div>
+            <p className="text-[10px] text-zinc-500">Expira: {result.expiresAt ? new Date(result.expiresAt).toLocaleString('es-MX') : '48 horas'}</p>
+            <button onClick={onClose} className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors">Cerrar</button>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              <Field label="Email del nuevo usuario">
+                <input type="email" value={form.email} onChange={e => handle('email', e.target.value)} placeholder="nuevo@hdreams.com" className={inputCls} />
+              </Field>
+              <Field label="Rol asignado">
+                <select value={form.role} onChange={e => handle('role', e.target.value)} className={inputCls}>
+                  {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                </select>
+              </Field>
+              <Field label="Nombre (opcional)">
+                <input value={form.nombres} onChange={e => handle('nombres', e.target.value)} placeholder="Ej. Laura Martínez" className={inputCls} />
+              </Field>
+            </div>
+            <p className="text-[10px] text-zinc-500">El usuario recibirá un token que deberá usar para registrarse. La invitación expira en 48 horas.</p>
+            <div className="flex gap-3 pt-2">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+              <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+                {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                {saving ? 'Creando...' : 'Generar Invitación'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

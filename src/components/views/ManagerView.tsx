@@ -63,7 +63,9 @@ interface DashKPIs {
 
 export default function ManagerView({ role, onBack, onClearRole }: ManagerViewProps) {
   const [activeSection, setActiveSection] = useState('Dashboard');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Auto-colapsa en tablets (md), expande en desktop (lg+)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1024);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [time, setTime] = useState(new Date().toLocaleTimeString('es-ES', { hour12: false }));
   const [searchQ, setSearchQ]         = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -118,13 +120,35 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
     const timer = setInterval(() => {
       setTime(new Date().toLocaleTimeString('es-ES', { hour12: false }));
     }, 1000);
-    return () => clearInterval(timer);
+
+    // Resize listener: auto-colapsa/expande sidebar según ancho
+    const onResize = () => {
+      if (window.innerWidth >= 1024) setSidebarCollapsed(false);
+      else if (window.innerWidth < 1024) setSidebarCollapsed(true);
+      if (window.innerWidth >= 768) setMobileSidebarOpen(false);
+    };
+    window.addEventListener('resize', onResize);
+    return () => { clearInterval(timer); window.removeEventListener('resize', onResize); };
   }, [role]);
 
   return (
     <div className="flex h-screen w-full text-slate-50 relative z-10 overflow-hidden">
-      {/* Sidebar */}
-      <aside className={`${sidebarCollapsed ? 'w-14' : 'w-56'} glass-card border-r-0 border-white/5 hidden md:flex flex-col m-3 rounded-2xl overflow-hidden relative z-20 transition-all duration-300`}>
+
+      {/* Mobile sidebar overlay backdrop */}
+      {mobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — hidden on mobile (overlay), visible md+ */}
+      <aside className={`
+        ${sidebarCollapsed ? 'w-14' : 'w-60 lg:w-56'}
+        glass-card border-r-0 border-white/5 flex flex-col rounded-2xl overflow-hidden relative z-40 transition-all duration-300
+        fixed md:relative inset-y-0 left-0 m-3
+        ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-[calc(100%+12px)] md:translate-x-0'}
+      `}>
         <div className="h-14 flex items-center px-3 border-b border-white/5 shrink-0 relative">
           {!sidebarCollapsed && (
             <div className="flex items-center gap-2.5">
@@ -183,11 +207,11 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
             </div>
           )}
 
-          {role === 'GERENTE' && (
+          {(role === 'GERENTE' || role === 'ADMINISTRACION') && (
             <div className="pt-2">
-              {!sidebarCollapsed && <p className="px-3 mb-1 text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">IA & Agentes</p>}
+              {!sidebarCollapsed && <p className="px-3 mb-1 text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">IA & Ajustes</p>}
               {sidebarCollapsed && <div className="h-px bg-white/5 mx-1 my-2" />}
-              <NavItem icon={Brain} label="Centro de Agentes" active={activeSection === 'Agentes IA'} onClick={() => setActiveSection('Agentes IA')} highlight collapsed={sidebarCollapsed} />
+              {role === 'GERENTE' && <NavItem icon={Brain} label="Centro de Agentes" active={activeSection === 'Agentes IA'} onClick={() => setActiveSection('Agentes IA')} highlight collapsed={sidebarCollapsed} />}
               <NavItem icon={SettingsIcon} label="Ajustes" active={activeSection === 'Ajustes'} onClick={() => setActiveSection('Ajustes')} collapsed={sidebarCollapsed} />
             </div>
           )}
@@ -208,16 +232,24 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
       {/* Main Content */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10">
         {/* Top Header */}
-        <header className="h-14 bg-transparent flex items-center justify-between px-5 shrink-0 border-b border-white/5">
-          <div className="flex items-center gap-3 flex-1">
+        <header className="h-14 bg-transparent flex items-center justify-between px-3 md:px-5 shrink-0 border-b border-white/5">
+          <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
+            {/* Hamburger para mobile */}
+            <button
+              onClick={() => setMobileSidebarOpen(o => !o)}
+              className="md:hidden flex items-center justify-center w-8 h-8 text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg border border-white/5 shrink-0"
+              title="Abrir menú"
+            >
+              <LayoutDashboard className="w-4 h-4" />
+            </button>
             <button
               onClick={onBack}
-              className="flex items-center gap-1.5 text-slate-400 hover:text-white transition-all bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-lg border border-white/5"
+              className="hidden sm:flex items-center gap-1.5 text-slate-400 hover:text-white transition-all bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-lg border border-white/5 shrink-0"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
               <span className="text-[10px] font-bold uppercase tracking-widest">Atrás</span>
             </button>
-            <div className="relative w-full md:w-72 group" ref={searchRef}>
+            <div className="relative flex-1 min-w-0 max-w-xs md:max-w-sm lg:max-w-md group" ref={searchRef}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
               <input
                 type="text"
@@ -255,7 +287,7 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
             </div>
           </div>
 
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-2 md:gap-4 shrink-0">
             <div className="text-right hidden lg:block">
               <p className="text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">Status Global</p>
               <div className="flex items-center justify-end gap-1.5 mt-0.5">
@@ -265,14 +297,14 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
             </div>
 
             <NotificationBell role={role} />
-            <div className="flex items-center gap-2.5 pl-4 border-l border-white/5">
-              <div className="text-right hidden sm:block">
+            <div className="flex items-center gap-2 pl-2 md:pl-4 border-l border-white/5">
+              <div className="text-right hidden md:block">
                 <p className="text-[11px] font-bold text-white leading-none">{role}</p>
                 <p className="text-[9px] text-slate-500">Conectado</p>
               </div>
               <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 p-[1px] shadow-lg shadow-blue-500/20">
                 <div className="w-full h-full rounded-xl bg-slate-900 flex items-center justify-center border border-white/10">
-                  <span className="text-[10px] font-black text-white">DT</span>
+                  <span className="text-[10px] font-black text-white">{role.slice(0, 2).toUpperCase()}</span>
                 </div>
               </div>
             </div>

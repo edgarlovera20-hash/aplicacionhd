@@ -1499,18 +1499,50 @@ Si la información no es suficiente para responder, indícalo.`;
   // ================= AI ROUTE (Gemini) — con inyección de conocimiento =================
   app.post("/api/generate-response", async (req, res) => {
     try {
-      const { systemPrompt, userMessage } = req.body;
-      // Inyectar contexto de knowledge base si hay docs relevantes
-      const kbChunks = searchKnowledge(userMessage, 3);
+      const { systemPrompt, userMessage, history = [] } = req.body as {
+        systemPrompt: string;
+        userMessage:  string;
+        history?:     { role: 'user' | 'model'; text: string }[];
+      };
+
+      // Contexto de knowledge base
+      const kbChunks  = searchKnowledge(userMessage, 3);
       const kbContext = kbChunks.length > 0
-        ? `\n\n--- INFORMACIÓN DE LA BASE DE CONOCIMIENTO ---\n${kbChunks.join('\n\n')}\n--- FIN ---\n`
+        ? `\n\n--- BASE DE CONOCIMIENTO ---\n${kbChunks.join('\n\n')}\n--- FIN ---`
         : '';
-      const prompt = `${systemPrompt}${kbContext}\n\nUsuario: ${userMessage}`;
-      const text = await geminiGenerate(prompt);
+
+      // Memoria del agente de chat principal (auto-aprendizaje)
+      const chatMemory = mockDb.agentMemory?.filter(m => m.agentId === 'CHAT_PRINCIPAL') ?? [];
+      const summary    = chatMemory.find(m => m.kind === 'summary');
+      const recent     = chatMemory
+        .filter(m => m.kind === 'interaction')
+        .sort((a, b) => b.ts.localeCompare(a.ts))
+        .slice(0, 5)
+        .reverse();
+      const memContext = summary
+        ? `\n\n--- CONTEXTO APRENDIDO ---\n${summary.content}\n--- FIN ---`
+        : '';
+
+      // Historial de la conversación actual
+      const historyContext = history.length > 0
+        ? '\n\n--- CONVERSACIÓN PREVIA ---\n' +
+          history.map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.text}`).join('\n') +
+          '\n--- FIN ---'
+        : '';
+
+      // Interacciones recientes aprendidas
+      const recentCtx = recent.length > 0
+        ? '\n\n--- INTERACCIONES RECIENTES ---\n' +
+          recent.map(e => e.content).join('\n') +
+          '\n--- FIN ---'
+        : '';
+
+      const prompt = `${systemPrompt}${kbContext}${memContext}${recentCtx}${historyContext}\n\nUsuario: ${userMessage}`;
+      const text   = await geminiGenerate(prompt);
       res.json({ text });
     } catch (error: any) {
-      console.error("Gemini Error:", error);
-      res.status(500).json({ error: error.message || "Error generating AI response" });
+      console.error("[AI/generate-response]", error);
+      res.status(500).json({ error: error.message || "Error generando respuesta de IA" });
     }
   });
 
