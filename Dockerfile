@@ -30,6 +30,10 @@ RUN npx esbuild server.ts \
       --outfile=dist/server.cjs \
       --external:pg-native \
       --external:fsevents \
+      --external:@aws-sdk/client-s3 \
+      --external:whatsapp-web.js \
+      --external:puppeteer \
+      --external:puppeteer-core \
       --sourcemap
 
 # ─────────────────────────────────────────────────────────────────
