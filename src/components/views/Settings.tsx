@@ -135,12 +135,12 @@ function UsuariosTab() {
 
   const loadUsers = async () => {
     setLoading(true);
-    try { setUsers(await api.get('/admin/users')); } catch { notify('Error cargando usuarios'); }
+    try { const d = await api.get('/admin/users'); setUsers(Array.isArray(d) ? d : []); } catch { notify('Error cargando usuarios'); }
     setLoading(false);
   };
 
   const loadInvites = async () => {
-    try { setInvites(await api.get('/invitations')); } catch { /* ignore */ }
+    try { const d = await api.get('/invitations'); setInvites(Array.isArray(d) ? d : []); } catch { /* ignore */ }
   };
 
   useEffect(() => { loadUsers(); loadInvites(); }, []);
@@ -529,7 +529,8 @@ function GastosTab() {
     setLoading(true);
     try {
       const r = await fetch('/api/admin/expenses');
-      setExpenses(await r.json());
+      const d = await r.json();
+      setExpenses(Array.isArray(d) ? d : []);
     } catch { notify('Error cargando gastos'); }
     setLoading(false);
   };
@@ -1953,28 +1954,28 @@ function CanalesTab() {
 
   const load = async () => {
     setLoading(true);
-    try { setAccounts(await (await fetch('/api/wa/accounts')).json()); }
+    try { const d = await (await fetch('/api/wa/accounts')).json(); setAccounts(Array.isArray(d) ? d : []); }
     catch { notify('Error cargando cuentas WA'); }
     finally { setLoading(false); }
   };
 
   const loadFb = async () => {
     setFbLoading(true);
-    try { setFbAccounts(await (await fetch('/api/fb/accounts')).json()); }
+    try { const d = await (await fetch('/api/fb/accounts')).json(); setFbAccounts(Array.isArray(d) ? d : []); }
     catch { notify('Error cargando cuentas Facebook'); }
     finally { setFbLoading(false); }
   };
 
   const loadWqr = async () => {
     setWqrLoading(true);
-    try { setWqrSessions(await (await fetch('/api/canales/whatsapp-qr')).json()); }
+    try { const d = await (await fetch('/api/canales/whatsapp-qr')).json(); setWqrSessions(Array.isArray(d) ? d : []); }
     catch { notify('Error cargando sesiones WA QR'); }
     finally { setWqrLoading(false); }
   };
 
   const loadTg = async () => {
     setTgLoading(true);
-    try { setTgBots(await (await fetch('/api/canales/telegram')).json()); }
+    try { const d = await (await fetch('/api/canales/telegram')).json(); setTgBots(Array.isArray(d) ? d : []); }
     catch { notify('Error cargando bots Telegram'); }
     finally { setTgLoading(false); }
   };
@@ -2633,7 +2634,7 @@ function KnowledgeBaseTab() {
         fetch('/api/knowledge'),
         fetch('/api/knowledge/stats'),
       ]);
-      setDocs(await dr.json());
+      const dd = await dr.json(); setDocs(Array.isArray(dd) ? dd : []);
       setStats(await sr.json());
     } catch { notify('Error cargando la base de conocimiento'); }
     finally { setLoading(false); }
