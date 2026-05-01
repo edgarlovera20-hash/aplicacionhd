@@ -63,6 +63,10 @@ export async function runMigrations(pool: PgPool): Promise<void> {
     try {
       await client.query("BEGIN");
       await client.query(sql);
+      await client.query(
+        "INSERT INTO schema_migrations (version, description) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [version, file]
+      );
       await client.query("COMMIT");
       ran++;
       console.log(`[migrations] ✓ ${file} aplicado`);

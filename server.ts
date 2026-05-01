@@ -5,7 +5,10 @@ import fs from "fs";
 import helmet from "helmet";
 import compression from "compression";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { Mutex } from "async-mutex";
+import { signAccessToken, signRefreshToken, verifyAccessToken, verifyRefreshToken, hashToken } from "./src/auth/jwt.js";
+import { loginSchema, registerSchema, inviteSchema, zodError } from "./src/auth/validation.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
@@ -20,7 +23,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 
 // ── Validación de entorno crítico (fail-fast en producción) ───────────────────
 if (IS_PROD) {
-  const required = ["PASSWORD_SALT"];
+  const required = ["PASSWORD_SALT", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length) {
     console.error(`[FATAL] Faltan variables de entorno requeridas en producción: ${missing.join(", ")}`);
@@ -70,9 +73,11 @@ async function startServer() {
       next();
     };
 
-  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
-  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
-  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
+  app.use('/api/auth/login',                  rateLimit(10, 60_000));   // 10 intentos / min
+  app.use('/api/auth/refresh',               rateLimit(30, 60_000));   // rotación de token
+  app.use('/api/auth/register-with-invite',  rateLimit(5,  300_000));  // registro por invitación
+  app.use('/api/invitations',                rateLimit(20, 60_000));   // generar invitaciones
+  app.use('/api/auth/passkey',               rateLimit(20, 60_000));   // WebAuthn
   app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini/Claude
   app.use('/api/geocode',            rateLimit(60,  60_000));   // Google Maps Geocoding
   app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads
@@ -564,29 +569,62 @@ async function startServer() {
 
   const mockDb = loadMockDb();
 
-  // ── Session store (RBAC) ─────────────────────────────────────────────────
-  const sessionStore = new Map<string, { uid: string; email: string; role: string; exp: number }>();
-  setInterval(() => {
-    const now = Date.now();
-    sessionStore.forEach((v, k) => { if (now > v.exp) sessionStore.delete(k); });
-  }, 60_000);
+  // ── JWT Auth + RBAC ──────────────────────────────────────────────────────
+  // Access token: 15 min, stateless JWT.
+  // Refresh token: 7 días, hash almacenado en DB (o en memoria cuando MockDB).
+  // El endpoint /api/auth/refresh rota el refresh token en cada uso.
 
-  const issueToken = (uid: string, email: string, role: string): string => {
-    const token = crypto.randomBytes(32).toString('hex');
-    sessionStore.set(token, { uid, email, role, exp: Date.now() + 8 * 3600_000 }); // 8h
-    return token;
+  /** Revoked refresh tokens (fallback cuando no hay PostgreSQL) */
+  const revokedRefreshHashes = new Set<string>();
+  // Limpieza periódica — en producción Redis TTL se encarga automáticamente
+  setInterval(() => revokedRefreshHashes.clear(), 24 * 3600_000);
+
+  /** Helper: parsea cookies del header sin cookie-parser */
+  const parseCookies = (req: any): Record<string, string> => {
+    const list: Record<string, string> = {};
+    const header = req.headers?.cookie || '';
+    header.split(';').forEach((part: string) => {
+      const [name, ...rest] = part.split('=');
+      if (name) list[name.trim()] = decodeURIComponent(rest.join('=').trim());
+    });
+    return list;
+  };
+
+  /** Emite access + refresh tokens y persiste el hash del refresh en DB */
+  const issueTokenPair = async (uid: string, email: string, role: string) => {
+    const payload = { uid, email, role };
+    const accessToken  = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+    if (isDbConnected) {
+      const tokenHash = hashToken(refreshToken);
+      await pool.query(
+        `INSERT INTO refresh_tokens (user_uid, token_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+        [uid, tokenHash]
+      );
+    }
+    return { accessToken, refreshToken };
+  };
+
+  /** Opciones de cookie para el refresh token */
+  const refreshCookieOpts = {
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure:   IS_PROD,
+    maxAge:   7 * 24 * 60 * 60 * 1000,
+    path:     '/api/auth',
   };
 
   const requireRole = (...allowed: string[]) =>
     (req: any, res: any, next: any) => {
-      const token = (req.headers.authorization || '').replace('Bearer ', '');
+      const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
       if (!token) return res.status(401).json({ error: 'No autenticado' });
-      const sess = sessionStore.get(token);
-      if (!sess || Date.now() > sess.exp) return res.status(401).json({ error: 'Sesión expirada' });
-      const normalised = sess.role.toLowerCase();
+      const payload = verifyAccessToken(token);
+      if (!payload) return res.status(401).json({ error: 'Sesión expirada' });
+      const normalised = payload.role.toLowerCase();
       if (allowed.length && !allowed.some(r => normalised.includes(r.toLowerCase())))
         return res.status(403).json({ error: 'Sin permisos para esta acción' });
-      (req as any).sess = sess;
+      (req as any).sess = payload; // backward compat con el resto del servidor
       next();
     };
 
@@ -612,13 +650,13 @@ async function startServer() {
   };
 
   /** Lee la sesión de cualquier request (sin requerir auth).
-   *  SEGURIDAD: si no hay token válido devuelve 'anonymous' sin leer headers del cliente
-   *  para evitar que el audit log sea falsificado. */
+   *  SEGURIDAD: no confía en headers x-user-* del cliente — solo en el JWT firmado. */
   const peekSession = (req: any): { uid: string; email: string; role?: string } => {
-    const token = (req.headers?.authorization || '').replace('Bearer ', '');
-    const sess = token ? sessionStore.get(token) : null;
-    if (sess && Date.now() < sess.exp) return { uid: sess.uid, email: sess.email, role: sess.role };
-    return { uid: 'anonymous', email: '' };
+    const token = (req.headers?.authorization || '').replace('Bearer ', '').trim();
+    const payload = token ? verifyAccessToken(token) : null;
+    return payload
+      ? { uid: payload.uid, email: payload.email, role: payload.role }
+      : { uid: 'anonymous', email: '' };
   };
 
   // ── Notification helper ───────────────────────────────────────────────────
@@ -645,64 +683,252 @@ async function startServer() {
   }
 
   // ================= API ROUTES (Auth & CRM) =================
-  app.post("/api/auth/register", async (req, res) => {
-    try {
-      const { email, password, nombres, apellidoPaterno, puestoActual, usuario } = req.body;
-      const uid = "USR-" + Date.now();
-      const password_hash = await hashPassword(password);
 
-      if (isDbConnected) {
-        await pool.query(
-          "INSERT INTO users (uid, email, usuario, password_hash, role, nombres, apellidos) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-          [uid, email, usuario, password_hash, puestoActual, nombres, apellidoPaterno]
-        );
-      } else {
-        if (mockDb.users.find((u: MockUser) => u.email === email)) {
-          return res.status(400).json({ error: "Email ya registrado" });
-        }
-        mockDb.users.push({ uid, email, role: puestoActual, nombres, password_hash });
-        saveMockDb(mockDb);
-      }
-
-      res.json({ uid, email, role: puestoActual, displayName: nombres });
-    } catch (e: any) {
-      console.error(e);
-      res.status(400).json({ error: e.message || "Error registrando usuario" });
-    }
-  });
-
+  // ── Login ────────────────────────────────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { email, password } = req.body;
-      let user;
+      const parsed = loginSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
+      const { email, password } = parsed.data;
 
+      let user: any;
       if (isDbConnected) {
-        const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
-        if (rows.length === 0) return res.status(401).json({ error: "Usuario no encontrado" });
+        const { rows } = await pool.query(
+          "SELECT * FROM users WHERE email = $1 AND status != 'inactive'", [email]
+        );
+        if (rows.length === 0) return res.status(401).json({ error: 'Credenciales inválidas' });
         user = rows[0];
       } else {
         user = mockDb.users.find((u: MockUser) => u.email === email);
-        if (!user) return res.status(401).json({ error: "Usuario no encontrado. Usa admin@hdreams.com / Admin123! o registrate primero." });
+        if (!user) return res.status(401).json({ error: 'Credenciales inválidas' });
       }
 
       const { valid, newHash } = await verifyPassword(password, user.password_hash);
-      if (!valid) return res.status(401).json({ error: "Contraseña incorrecta" });
+      if (!valid) return res.status(401).json({ error: 'Credenciales inválidas' });
 
-      // Auto-migración: si el hash era SHA-256, persistir el nuevo hash bcrypt
       if (newHash) {
         user.password_hash = newHash;
-        if (isDbConnected) {
-          await pool.query("UPDATE users SET password_hash = $1 WHERE uid = $2", [newHash, user.uid]);
-        } else {
-          saveMockDb(mockDb);
-        }
+        if (isDbConnected) await pool.query("UPDATE users SET password_hash=$1 WHERE uid=$2", [newHash, user.uid]);
+        else saveMockDb(mockDb);
       }
 
-      const sessionToken = issueToken(user.uid, user.email, user.role);
+      const { accessToken, refreshToken } = await issueTokenPair(user.uid, user.email, user.role);
+      res.cookie('hdreams_rt', refreshToken, refreshCookieOpts);
       audit(user.uid, user.email, 'LOGIN', 'auth');
-      res.json({ uid: user.uid, email: user.email, role: user.role, displayName: user.nombres, sessionToken });
+      res.json({ uid: user.uid, email: user.email, role: user.role, displayName: user.nombres, sessionToken: accessToken });
     } catch (e: any) {
-      res.status(500).json({ error: "Error en el servidor" });
+      console.error('[auth/login]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Refresh token (rotación) ─────────────────────────────────────────────
+  app.post("/api/auth/refresh", async (req, res) => {
+    try {
+      const cookies = parseCookies(req);
+      const oldRefresh = cookies['hdreams_rt'];
+      if (!oldRefresh) return res.status(401).json({ error: 'No autenticado' });
+
+      const payload = verifyRefreshToken(oldRefresh);
+      if (!payload) return res.status(401).json({ error: 'Sesión expirada' });
+
+      const oldHash = hashToken(oldRefresh);
+
+      if (isDbConnected) {
+        const { rowCount } = await pool.query(
+          "DELETE FROM refresh_tokens WHERE token_hash=$1 AND expires_at > NOW()", [oldHash]
+        );
+        if (!rowCount) return res.status(401).json({ error: 'Sesión inválida o expirada' });
+      } else {
+        if (revokedRefreshHashes.has(oldHash)) return res.status(401).json({ error: 'Token ya utilizado' });
+        revokedRefreshHashes.add(oldHash);
+      }
+
+      const { accessToken, refreshToken: newRefresh } = await issueTokenPair(payload.uid, payload.email, payload.role);
+      res.cookie('hdreams_rt', newRefresh, refreshCookieOpts);
+      res.json({ sessionToken: accessToken });
+    } catch (e: any) {
+      console.error('[auth/refresh]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Logout ───────────────────────────────────────────────────────────────
+  app.post("/api/auth/logout", async (req, res) => {
+    try {
+      const cookies = parseCookies(req);
+      const refreshToken = cookies['hdreams_rt'];
+      if (refreshToken) {
+        const tokenHash = hashToken(refreshToken);
+        if (isDbConnected) {
+          await pool.query("DELETE FROM refresh_tokens WHERE token_hash=$1", [tokenHash]);
+        } else {
+          revokedRefreshHashes.add(tokenHash);
+        }
+      }
+      res.clearCookie('hdreams_rt', { path: '/api/auth' });
+      const sess = peekSession(req);
+      if (sess.uid !== 'anonymous') audit(sess.uid, sess.email, 'LOGOUT', 'auth');
+      res.json({ ok: true });
+    } catch (e: any) {
+      console.error('[auth/logout]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Registro por invitación (reemplaza el registro público) ──────────────
+  app.post("/api/auth/register-with-invite", async (req, res) => {
+    try {
+      const parsed = registerSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
+      const { inviteToken, password, nombres, apellidoPaterno, usuario } = parsed.data;
+
+      let finalEmail: string;
+      let finalRole:  string;
+
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT * FROM invitations WHERE token=$1 AND used=false AND expires_at > NOW()", [inviteToken]
+        );
+        if (rows.length === 0) return res.status(400).json({ error: 'Invitación inválida o expirada' });
+        finalEmail = rows[0].email;
+        finalRole  = rows[0].role;
+        const existing = await pool.query("SELECT uid FROM users WHERE email=$1", [finalEmail]);
+        if (existing.rows.length > 0) return res.status(409).json({ error: 'Este email ya tiene cuenta' });
+      } else {
+        // MockDB fallback — invitaciones guardadas en memoria
+        const inv = (mockDb as any).__invitations?.get(inviteToken);
+        if (!inv || Date.now() > inv.expires) return res.status(400).json({ error: 'Invitación inválida o expirada' });
+        if (mockDb.users.find((u: MockUser) => u.email === inv.email))
+          return res.status(409).json({ error: 'Este email ya tiene cuenta' });
+        finalEmail = inv.email;
+        finalRole  = inv.role;
+      }
+
+      const uid           = 'USR-' + Date.now();
+      const password_hash = await hashPassword(password);
+      const finalUsuario  = usuario || finalEmail.split('@')[0];
+
+      if (isDbConnected) {
+        await pool.query(
+          "INSERT INTO users (uid, email, usuario, password_hash, role, nombres, apellidos) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+          [uid, finalEmail, finalUsuario, password_hash, finalRole, nombres, apellidoPaterno]
+        );
+        await pool.query("UPDATE invitations SET used=true, used_at=NOW() WHERE token=$1", [inviteToken]);
+      } else {
+        mockDb.users.push({ uid, email: finalEmail, role: finalRole, nombres, password_hash });
+        (mockDb as any).__invitations?.delete(inviteToken);
+        saveMockDb(mockDb);
+      }
+
+      audit(uid, finalEmail, 'REGISTER', 'auth', { role: finalRole });
+      res.status(201).json({ uid, email: finalEmail, role: finalRole, displayName: nombres });
+    } catch (e: any) {
+      console.error('[auth/register-with-invite]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Crear invitación (solo gerente/administracion) ───────────────────────
+  app.post("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const parsed = inviteSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
+      const { email, role, nombres } = parsed.data;
+      const sess     = (req as any).sess;
+      const token    = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 48 * 3600_000);
+
+      if (isDbConnected) {
+        const existing = await pool.query(
+          "SELECT uid FROM users WHERE email=$1", [email]
+        );
+        if (existing.rows.length > 0) return res.status(409).json({ error: 'Este email ya tiene cuenta' });
+        await pool.query(
+          "INSERT INTO invitations (token, email, role, nombres, created_by_uid, expires_at) VALUES ($1,$2,$3,$4,$5,$6)",
+          [token, email, role, nombres ?? null, sess.uid, expiresAt]
+        );
+      } else {
+        if (!(mockDb as any).__invitations) (mockDb as any).__invitations = new Map();
+        (mockDb as any).__invitations.set(token, { email, role, nombres, expires: expiresAt.getTime(), createdBy: sess.uid });
+      }
+
+      audit(sess.uid, sess.email, 'CREATE_INVITATION', 'auth', { email, role });
+      res.status(201).json({ token, email, role, expiresAt: expiresAt.toISOString() });
+    } catch (e: any) {
+      console.error('[invitations]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Listar invitaciones activas (gerente/administracion) ─────────────────
+  app.get("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT id, email, role, nombres, expires_at, used, created_at FROM invitations ORDER BY created_at DESC LIMIT 100"
+        );
+        res.json(rows);
+      } else {
+        const inv = (mockDb as any).__invitations as Map<string, any> | undefined;
+        if (!inv) return res.json([]);
+        const list = Array.from(inv.entries()).map(([token, v]) => ({ token, ...v }));
+        res.json(list);
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Revocar invitación ───────────────────────────────────────────────────
+  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const { token } = req.params;
+      if (isDbConnected) {
+        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
+      } else {
+        (mockDb as any).__invitations?.delete(token);
+      }
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Lista de usuarios (gerente/administracion) ───────────────────────────
+  app.get("/api/users", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT uid, email, usuario, role, nombres, apellidos, status, created_at FROM users ORDER BY created_at DESC"
+        );
+        res.json(rows);
+      } else {
+        res.json(mockDb.users.map(({ password_hash: _, ...u }: any) => u));
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Perfil propio ────────────────────────────────────────────────────────
+  app.get("/api/profile", requireRole(), async (req, res) => {
+    try {
+      const { uid } = (req as any).sess;
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT uid, email, usuario, role, nombres, apellidos, status, created_at FROM users WHERE uid=$1", [uid]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+        res.json(rows[0]);
+      } else {
+        const u = mockDb.users.find((u: MockUser) => u.uid === uid);
+        if (!u) return res.status(404).json({ error: 'Usuario no encontrado' });
+        const { password_hash: _, ...safe } = u as any;
+        res.json(safe);
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
     }
   });
 
@@ -1662,11 +1888,11 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
   // Servir archivos estáticos /uploads/expedientes/* — autenticado vía Bearer
   // header O ?token=... (los <img>/<audio>/<video> no envían Authorization).
   const expedienteStaticAuth = (req: any, res: any, next: any) => {
-    const token = (req.headers?.authorization || '').replace('Bearer ', '')
+    const token = (req.headers?.authorization || '').replace('Bearer ', '').trim()
                   || String(req.query?.token || '');
     if (!token) return res.status(401).send('No autenticado');
-    const sess = sessionStore.get(token);
-    if (!sess || Date.now() > sess.exp) return res.status(401).send('Sesión expirada');
+    const payload = verifyAccessToken(token);
+    if (!payload) return res.status(401).send('Sesión expirada');
     next();
   };
   app.use('/uploads/expedientes', expedienteStaticAuth, express.static(UPLOADS_ROOT));
@@ -1775,10 +2001,10 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
 
   app.post("/api/admin/preferences/:uid", (req, res) => {
     if (!mockDb.userPrefs) mockDb.userPrefs = [];
-    // Support 'me' as uid — resolve from session token
-    const token = (req.headers.authorization || '').replace('Bearer ', '');
-    const sess  = token ? sessionStore.get(token) : null;
-    const uid   = req.params.uid === 'me' ? (sess?.uid || 'anonymous') : req.params.uid;
+    // Support 'me' as uid — resolve from JWT
+    const token   = (req.headers.authorization || '').replace('Bearer ', '').trim();
+    const payload = token ? verifyAccessToken(token) : null;
+    const uid     = req.params.uid === 'me' ? (payload?.uid || 'anonymous') : req.params.uid;
     const idx = mockDb.userPrefs.findIndex(p => p.userId === uid);
     const pref: UserPref = { ...req.body, userId: uid, updatedAt: new Date().toISOString() };
     if (idx >= 0) mockDb.userPrefs[idx] = pref;
