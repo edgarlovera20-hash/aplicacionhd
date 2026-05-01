@@ -227,7 +227,7 @@ async function startServer() {
       const keyIdx = (currentGeminiIdx + attempt) % geminiKeys.length;
       try {
         const client = new GoogleGenerativeAI(geminiKeys[keyIdx]);
-        const model  = client.getGenerativeModel({ model: "gemini-2.0-flash" });
+        const model  = client.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(promptOrParts as any);
         currentGeminiIdx = keyIdx;
         return result.response.text();
@@ -237,15 +237,41 @@ async function startServer() {
       }
     }
 
-    // ── Intento 3: OpenAI (solo texto, sin visión) ────────────────────────
-    if (openaiClient && isText && !visionMode) {
-      console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
-      const chat = await openaiClient.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: promptOrParts as string }],
-        max_tokens: 2048,
-      });
-      return chat.choices[0]?.message?.content || "";
+    // ── Intento 3: OpenAI (texto y visión via gpt-4o-mini) ────────────────
+    if (openaiClient) {
+      try {
+        console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
+        let oaiMessages: any[];
+        if (isText || !visionMode) {
+          oaiMessages = [{ role: "user", content: promptOrParts as string }];
+        } else {
+          // Construir mensaje con imágenes para visión
+          const parts = promptOrParts as any[];
+          const content: any[] = [];
+          for (const p of parts) {
+            if (typeof p === "string") {
+              content.push({ type: "text", text: p });
+            } else if (p?.inlineData?.data && p?.inlineData?.mimeType) {
+              const mt = p.inlineData.mimeType as string;
+              if (/^image\//.test(mt)) {
+                content.push({ type: "image_url", image_url: { url: `data:${mt};base64,${p.inlineData.data}`, detail: "high" } });
+              }
+            } else if (p?.text) {
+              content.push({ type: "text", text: p.text });
+            }
+          }
+          oaiMessages = [{ role: "user", content }];
+        }
+        const chat = await openaiClient.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: oaiMessages,
+          max_tokens: 2048,
+        });
+        return chat.choices[0]?.message?.content || "";
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`OpenAI fallo (${err?.message?.slice(0, 80)})`);
+      }
     }
 
     throw lastErr || new Error("No hay proveedores de IA disponibles.");
@@ -1723,7 +1749,11 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
       res.json(normalised);
     } catch (error: any) {
       console.error("OCR Error:", error);
-      res.status(500).json({ error: error.message || "Error processing document" });
+      const isQuota = error?.message?.includes('quota') || error?.message?.includes('rate') || error?.status === 429;
+      const userMsg = isQuota
+        ? 'Límite de OCR temporalmente alcanzado. Espera 1 minuto e intenta de nuevo, o ingresa los datos manualmente.'
+        : (error.message || 'Error procesando documento');
+      res.status(isQuota ? 429 : 500).json({ error: userMsg });
     }
   });
 

@@ -64,7 +64,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 # Health check para orchestradores
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
   CMD wget -qO- http://localhost:3000/health || exit 1
 
 # Arrancar con node puro — sin tsx, sin compilación en runtime
