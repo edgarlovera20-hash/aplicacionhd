@@ -149,17 +149,17 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
         fixed md:relative inset-y-0 left-0 m-3
         ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-[calc(100%+12px)] md:translate-x-0'}
       `}>
-        <div className="h-14 flex items-center px-3 border-b border-white/5 shrink-0 relative">
+        <div className="h-16 flex items-center px-3 border-b border-white/5 shrink-0 relative">
           {!sidebarCollapsed && (
-            <div className="flex items-center gap-2.5">
-              <Logo className="text-[32px]" />
-              <div>
-                <h1 className="text-base font-display font-black text-white tracking-tighter leading-none">HDreams</h1>
-                <p className="text-[8px] text-blue-400 font-bold tracking-[0.3em] uppercase">Enterprise</p>
+            <div className="flex items-center gap-3">
+              <Logo className="text-[40px]" />
+              <div className="flex flex-col">
+                <h1 className="text-sm font-black text-white tracking-tight leading-none">Heavenly Dreams</h1>
+                <p className="text-[9px] text-blue-400 font-bold tracking-[0.25em] uppercase mt-0.5">Enterprise CRM</p>
               </div>
             </div>
           )}
-          {sidebarCollapsed && <Logo className="text-[28px] mx-auto" />}
+          {sidebarCollapsed && <Logo className="text-[32px] mx-auto" />}
           <button
             onClick={() => setSidebarCollapsed(c => !c)}
             title={sidebarCollapsed ? 'Expandir menú' : 'Contraer menú'}

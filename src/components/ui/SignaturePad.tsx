@@ -40,6 +40,11 @@ export default function SignaturePad({ onSignatureConfirm, showCamera = true }: 
   const startCamera = async () => {
     try {
       setCameraError(null);
+      // navigator.mediaDevices solo disponible en HTTPS o localhost
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setCameraError('La cámara requiere conexión segura (HTTPS). Firma directamente en el área blanca.');
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 320 }, height: { ideal: 240 } },
         audio: false,

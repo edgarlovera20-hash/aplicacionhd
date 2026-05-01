@@ -99,9 +99,12 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <div>
-            <h1 className="text-lg font-bold text-white tracking-tight leading-tight">HDreamsApp</h1>
-            <p className="text-[10px] text-blue-400 font-medium uppercase tracking-wider">{role}</p>
+          <div className="flex items-center gap-2">
+            <Logo className="text-[36px]" />
+            <div>
+              <h1 className="text-sm font-black text-white tracking-tight leading-none">Heavenly Dreams</h1>
+              <p className="text-[9px] text-blue-400 font-bold uppercase tracking-wider mt-0.5">{role}</p>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
