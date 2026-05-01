@@ -642,6 +642,28 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
         }
       }
       updateForm(patch);
+
+      // Auto-geocodificar dirección extraída del comprobante → llena coordenadas automáticamente
+      if (type === 'comprobante' && !form.coordenadas) {
+        const addr = [
+          patch.calle        || data.calle,
+          patch.numeroExterior || data.numeroExterior,
+          patch.colonia      || data.colonia,
+          patch.ciudad       || data.ciudad,
+          patch.codigoPostal || data.codigoPostal,
+          'México',
+        ].filter(Boolean).join(', ');
+        if (addr.length > 15) {
+          api.post('/geocode', { address: addr })
+            .then((geo: any) => {
+              if (geo?.lat && geo?.lng) {
+                updateForm({ coordenadas: `${(geo.lat as number).toFixed(6)}, ${(geo.lng as number).toFixed(6)}` });
+              }
+            })
+            .catch(() => {}); // silencioso — usuario puede capturar GPS manualmente
+        }
+      }
+
       setOcrVerified(p => ({ ...p, [field]: true }));
       setTimeout(() => setOcrVerified(p => ({ ...p, [field]: false })), 8000);
     } catch (err: any) {

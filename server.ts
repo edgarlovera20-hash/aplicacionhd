@@ -74,6 +74,7 @@ async function startServer() {
   app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
   app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
   app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini/Claude
+  app.use('/api/geocode',            rateLimit(60,  60_000));   // Google Maps Geocoding
   app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads
   app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
   app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
@@ -112,6 +113,36 @@ async function startServer() {
   }
 
   let currentGeminiIdx = 0;
+
+  const googleVisionKey = process.env.GOOGLE_CLOUD_VISION_API_KEY || "";
+  const googleMapsKey   = process.env.GOOGLE_MAPS_API_KEY || "";
+
+  /**
+   * Extrae texto crudo de una imagen usando Google Cloud Vision API (DOCUMENT_TEXT_DETECTION).
+   * Retorna el texto completo o lanza error si la clave no está configurada.
+   */
+  async function cloudVisionOCR(b64: string, mimeType: string): Promise<string> {
+    if (!googleVisionKey) throw new Error("GOOGLE_CLOUD_VISION_API_KEY no configurada");
+    const body = {
+      requests: [{
+        image: { content: b64 },
+        features: [{ type: "DOCUMENT_TEXT_DETECTION", maxResults: 1 }],
+        imageContext: { languageHints: ["es"] },
+      }],
+    };
+    const resp = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${googleVisionKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    );
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`Cloud Vision error ${resp.status}: ${err.slice(0, 200)}`);
+    }
+    const json = await resp.json() as any;
+    const fullText: string = json.responses?.[0]?.fullTextAnnotation?.text || "";
+    if (!fullText) throw new Error("Cloud Vision no detectó texto en la imagen");
+    return fullText;
+  }
 
   /**
    * Convierte el formato Gemini (parts con inlineData) al formato Claude (content blocks).
@@ -1295,7 +1326,7 @@ El checklist debe tener entre 5 y 8 pasos relevantes para ${issueType || 'valida
     }
   });
 
-  // ================= OCR ROUTE (Gemini) =================
+  // ================= OCR ROUTE (Cloud Vision → IA parser / Gemini Vision fallback) =================
   app.post("/api/ocr", async (req, res) => {
     try {
       const { image, docType } = req.body;
@@ -1396,10 +1427,19 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
 
       const ocrPrompt = ocrPrompts[docType] ?? ocrPrompts['ine'];
 
-      const text = await geminiGenerate([
-        ocrPrompt,
-        { inlineData: { data: b64, mimeType } }
-      ], { visionMode: true });
+      let text: string;
+      if (googleVisionKey) {
+        // Cloud Vision extrae texto crudo → IA parsea a JSON estructurado (más barato)
+        const rawText = await cloudVisionOCR(b64, mimeType);
+        const textOnlyPrompt = `${ocrPrompt}\n\nTexto extraído por OCR de la imagen:\n\`\`\`\n${rawText}\n\`\`\`\n\nParsea el texto anterior y devuelve únicamente el JSON solicitado.`;
+        text = await aiGenerate(textOnlyPrompt);
+      } else {
+        // Fallback: Gemini Vision con imagen completa
+        text = await geminiGenerate([
+          ocrPrompt,
+          { inlineData: { data: b64, mimeType } }
+        ], { visionMode: true });
+      }
 
       // Robust JSON extraction — handles markdown fences and extra text
       const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -1426,6 +1466,32 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
     } catch (error: any) {
       console.error("OCR Error:", error);
       res.status(500).json({ error: error.message || "Error processing document" });
+    }
+  });
+
+  // ================= GEOCODE ROUTE (Google Maps Geocoding API) =================
+  app.post("/api/geocode", async (req, res) => {
+    try {
+      const { address } = req.body as { address: string };
+      if (!address?.trim()) return res.status(400).json({ error: "Dirección requerida" });
+      if (!googleMapsKey) return res.status(503).json({ error: "GOOGLE_MAPS_API_KEY no configurada — agrega la clave en .env" });
+
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${googleMapsKey}&region=mx&language=es`;
+      const resp = await fetch(url);
+      const json = await resp.json() as any;
+
+      if (json.status !== "OK" || !json.results?.length) {
+        return res.status(404).json({ error: `Sin resultados para la dirección proporcionada (${json.status})` });
+      }
+      const loc = json.results[0].geometry.location as { lat: number; lng: number };
+      res.json({
+        lat: loc.lat,
+        lng: loc.lng,
+        formattedAddress: json.results[0].formatted_address as string,
+      });
+    } catch (error: any) {
+      console.error("Geocode Error:", error);
+      res.status(500).json({ error: error.message || "Error al geocodificar" });
     }
   });
 
