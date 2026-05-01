@@ -10,6 +10,10 @@ npm-debug.log*
 *.jpeg
 *.png
 *.pdf
+# Excepciones: íconos de la app (public/)
+!public/*.png
+!public/*.jpg
+!public/*.ico
 
 # Variables de entorno — NUNCA subir a git
 .env
