@@ -4,6 +4,11 @@ import crypto from "crypto";
 import fs from "fs";
 import helmet from "helmet";
 import compression from "compression";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { Mutex } from "async-mutex";
+import { signAccessToken, signRefreshToken, verifyAccessToken, verifyRefreshToken, hashToken } from "./src/auth/jwt.js";
+import { loginSchema, registerSchema, inviteSchema, zodError } from "./src/auth/validation.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
@@ -18,6 +23,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 
 // ── Validación de entorno crítico (fail-fast en producción) ───────────────────
 if (IS_PROD) {
+  const required = ["PASSWORD_SALT", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
   const required = ["PASSWORD_SALT"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length) {
@@ -40,6 +46,11 @@ async function startServer() {
   // ── Seguridad: cabeceras + compresión ─────────────────────────────────────
   app.use(
     helmet({
+      // CSP y HSTS deshabilitados hasta configurar HTTPS/TLS (Caddy).
+      // Con HTTP puro, HSTS rompe el browser y CSP bloquea assets.
+      // TODO: re-habilitar cuando se agregue dominio + certificado SSL.
+      contentSecurityPolicy: false,
+      strictTransportSecurity: false,
       // CSP deshabilitado: la app embebe scripts inline (Vite dev) y conecta a
       // dominios externos (Gemini, OpenAI, Twilio). Si se quiere endurecer, hay
       // que listar todos los origins permitidos. Por ahora solo otras cabeceras.
@@ -48,6 +59,45 @@ async function startServer() {
     })
   );
   app.use(compression());
+  app.use(express.json({ limit: '20mb' }));
+
+  // ── Rate limiting global (aplicado aquí, ANTES de cualquier ruta) ────────
+  // IMPORTANTE: deben estar aquí para que Express los ejecute antes de los handlers.
+  const rateCounts = new Map<string, { count: number; reset: number }>();
+  const rateLimit = (max: number, windowMs: number) =>
+    (req: any, res: any, next: any) => {
+      const key = req.ip || 'unknown';
+      const now = Date.now();
+      const entry = rateCounts.get(key);
+      if (!entry || now > entry.reset) {
+        rateCounts.set(key, { count: 1, reset: now + windowMs });
+        return next();
+      }
+      entry.count++;
+      if (entry.count > max) return res.status(429).json({ error: 'Demasiadas solicitudes, espera un momento' });
+      next();
+    };
+
+  app.use('/api/auth/login',                  rateLimit(10, 60_000));   // 10 intentos / min
+  app.use('/api/auth/refresh',               rateLimit(30, 60_000));   // rotación de token
+  app.use('/api/auth/register-with-invite',  rateLimit(5,  300_000));  // registro por invitación
+  app.use('/api/invitations',                rateLimit(20, 60_000));   // generar invitaciones
+  app.use('/api/auth/passkey',               rateLimit(20, 60_000));   // WebAuthn
+  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini/Claude
+  app.use('/api/geocode',            rateLimit(60,  60_000));   // Google Maps Geocoding
+  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads
+  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
+  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
+  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
+  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
+  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
+  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
+  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
+
+  // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
+  const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
+
   app.use(express.json({ limit: '10mb' }));
 
   // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
@@ -66,6 +116,7 @@ async function startServer() {
   //  - Vision (OCR INE/CURP/comprobante): claude-haiku-4-5 — rápido y barato (~$1/$5 per M)
   //  - Texto general (chat, resúmenes):    claude-sonnet-4-6 — 1M ctx, adaptive thinking
   const CLAUDE_TEXT_MODEL   = process.env.CLAUDE_TEXT_MODEL   || "claude-sonnet-4-6";
+  const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5-20251001";
   const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5";
 
   const providers: string[] = [];
@@ -79,6 +130,36 @@ async function startServer() {
   }
 
   let currentGeminiIdx = 0;
+
+  const googleVisionKey = process.env.GOOGLE_CLOUD_VISION_API_KEY || "";
+  const googleMapsKey   = process.env.GOOGLE_MAPS_API_KEY || "";
+
+  /**
+   * Extrae texto crudo de una imagen usando Google Cloud Vision API (DOCUMENT_TEXT_DETECTION).
+   * Retorna el texto completo o lanza error si la clave no está configurada.
+   */
+  async function cloudVisionOCR(b64: string, mimeType: string): Promise<string> {
+    if (!googleVisionKey) throw new Error("GOOGLE_CLOUD_VISION_API_KEY no configurada");
+    const body = {
+      requests: [{
+        image: { content: b64 },
+        features: [{ type: "DOCUMENT_TEXT_DETECTION", maxResults: 1 }],
+        imageContext: { languageHints: ["es"] },
+      }],
+    };
+    const resp = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${googleVisionKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    );
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`Cloud Vision error ${resp.status}: ${err.slice(0, 200)}`);
+    }
+    const json = await resp.json() as any;
+    const fullText: string = json.responses?.[0]?.fullTextAnnotation?.text || "";
+    if (!fullText) throw new Error("Cloud Vision no detectó texto en la imagen");
+    return fullText;
+  }
 
   /**
    * Convierte el formato Gemini (parts con inlineData) al formato Claude (content blocks).
@@ -168,6 +249,41 @@ async function startServer() {
       }
     }
 
+    // ── Intento 3: OpenAI (texto y visión via gpt-4o-mini) ────────────────
+    if (openaiClient) {
+      try {
+        console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
+        let oaiMessages: any[];
+        if (isText || !visionMode) {
+          oaiMessages = [{ role: "user", content: promptOrParts as string }];
+        } else {
+          // Construir mensaje con imágenes para visión
+          const parts = promptOrParts as any[];
+          const content: any[] = [];
+          for (const p of parts) {
+            if (typeof p === "string") {
+              content.push({ type: "text", text: p });
+            } else if (p?.inlineData?.data && p?.inlineData?.mimeType) {
+              const mt = p.inlineData.mimeType as string;
+              if (/^image\//.test(mt)) {
+                content.push({ type: "image_url", image_url: { url: `data:${mt};base64,${p.inlineData.data}`, detail: "high" } });
+              }
+            } else if (p?.text) {
+              content.push({ type: "text", text: p.text });
+            }
+          }
+          oaiMessages = [{ role: "user", content }];
+        }
+        const chat = await openaiClient.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: oaiMessages,
+          max_tokens: 2048,
+        });
+        return chat.choices[0]?.message?.content || "";
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`OpenAI fallo (${err?.message?.slice(0, 80)})`);
+      }
     // ── Intento 3: OpenAI (solo texto, sin visión) ────────────────────────
     if (openaiClient && isText && !visionMode) {
       console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
@@ -185,8 +301,34 @@ async function startServer() {
   const geminiGenerate = aiGenerate;
 
   const SALT = process.env.PASSWORD_SALT || "hdreams_salt_2026";
-  const hashPassword = (password: string) =>
-    crypto.createHash("sha256").update(password + SALT).digest("hex");
+
+  /** Hash seguro de contraseña con bcrypt (12 rounds). */
+  const hashPassword = (password: string): Promise<string> =>
+    bcrypt.hash(password, 12);
+
+  /** Detecta si el hash es legacy SHA-256 (64 hex) vs bcrypt ($2b$...) */
+  const isLegacyHash = (hash: string) => /^[0-9a-f]{64}$/.test(hash);
+
+  /**
+   * Verifica contraseña con auto-migración SHA-256 → bcrypt.
+   * Devuelve { valid, newHash? } — si newHash está presente, hay que persistirlo.
+   */
+  const verifyPassword = async (
+    password: string,
+    storedHash: string
+  ): Promise<{ valid: boolean; newHash?: string }> => {
+    if (isLegacyHash(storedHash)) {
+      // Hash legacy SHA-256 — verificar con método anterior
+      const legacy = crypto.createHash("sha256").update(password + SALT).digest("hex");
+      if (legacy !== storedHash) return { valid: false };
+      // Contraseña correcta → migrar a bcrypt automáticamente
+      const newHash = await bcrypt.hash(password, 12);
+      return { valid: true, newHash };
+    }
+    // Hash bcrypt normal
+    const valid = await bcrypt.compare(password, storedHash);
+    return { valid };
+  };
 
   // ================= DATABASE (PostgreSQL) =================
   const pool = new Pool({
@@ -196,7 +338,8 @@ async function startServer() {
   let isDbConnected = false;
 
   const MOCK_DB_FILE = path.join(process.cwd(), ".mockdb.json");
-  const adminHash = crypto.createHash("sha256").update("Admin123!" + "hdreams_salt_2026").digest("hex");
+  // Hash bcrypt de "Admin123!" (12 rounds) — cambia esta contraseña en producción.
+  const ADMIN_DEFAULT_HASH = "$2b$12$Fxsd7IaL8MnSBJXrVUmi3uJM7YGhlSMhX458qH90hPTIT0EJq2yFW";
 
   type MockUser = { uid: string; email: string; role: string; nombres: string; password_hash: string; status?: string; createdAt?: string };
   type Expense  = { id: string; userId: string; amount: number; category: string; description: string; date: string; createdAt: string };
@@ -211,6 +354,36 @@ async function startServer() {
     status: 'activo' | 'inactivo' | 'error' | 'sin_configurar';
     displayPhone?: string;   // E.164 verified number from Meta
     lastChecked?: string;    // ISO timestamp of last connection test
+  };
+  type FBAccount = {
+    id: string;
+    nombre: string;          // Display name, e.g. "Página Heavenly Dreams"
+    pageId: string;          // Facebook Page ID
+    accessToken: string;     // Page Access Token (masked on GET)
+    tipo: 'reclutamiento' | 'clientes' | 'cobranza' | 'soporte' | 'marketing';
+    activo: boolean;
+    status: 'activo' | 'inactivo' | 'error' | 'sin_configurar';
+    pageName?: string;       // Verified page name from Graph API
+    category?: string;       // Page category from Meta
+    lastChecked?: string;    // ISO timestamp of last connection test
+  };
+  type WAQRCanalSession = {
+    id: string;           // used as sessionId in whatsappEngine
+    nombre: string;       // display label e.g. "WhatsApp Ventas"
+    tipo: 'personal' | 'business';
+    activo: boolean;
+    phoneNumber?: string; // E.164 once connected
+    createdAt: string;
+  };
+  type TelegramBot = {
+    id: string;
+    nombre: string;
+    token: string;        // masked on GET
+    activo: boolean;
+    status: 'activo' | 'inactivo' | 'error' | 'sin_configurar';
+    botUsername?: string;
+    botName?: string;
+    lastChecked?: string;
   };
   type UserPref = { userId: string; visibleColumns: string[]; kpiConfig: Record<string,boolean>; updatedAt: string };
   type BotCandidate = {
@@ -355,6 +528,9 @@ async function startServer() {
     inventory: InventoryItem[];
     auditLog: AuditEntry[];
     waAccounts: WAAccount[];
+    fbAccounts: FBAccount[];
+    waQRSessions: WAQRCanalSession[];
+    telegramBots: TelegramBot[];
     recruitmentAgents: RecruitmentAgent[];
     agents: Agent[];
     agentMemory: AgentMemoryEntry[];
@@ -378,6 +554,9 @@ async function startServer() {
         if (!data.inventory)             data.inventory = [];
         if (!data.auditLog)              data.auditLog = [];
         if (!data.waAccounts)            data.waAccounts = [];
+        if (!data.fbAccounts)            data.fbAccounts = [];
+        if (!data.waQRSessions)          data.waQRSessions = [];
+        if (!data.telegramBots)          data.telegramBots = [];
         if (!data.recruitmentAgents)     data.recruitmentAgents = [];
         if (!data.agents)                data.agents = [];
         if (!data.agentMemory)           data.agentMemory = [];
@@ -386,8 +565,8 @@ async function startServer() {
     } catch {}
     return {
       users: [
-        { uid: "USR-MASTER-001", email: "admin@hdreams.com",          role: "gerente",  nombres: "Administrador", password_hash: adminHash,                                                                                status: "active", createdAt: new Date().toISOString() },
-        { uid: "USR-EDGAR-001",  email: "edgarlovera20@gmail.com",    role: "gerente",  nombres: "Edgar Lovera",  password_hash: "a2c268278fb3b83b49b581ed13426a9b21f2661513aa6ba74d0a97b221201d50", status: "active", createdAt: new Date().toISOString() }
+        { uid: "USR-MASTER-001", email: "admin@hdreams.com",       role: "gerente", nombres: "Administrador", password_hash: ADMIN_DEFAULT_HASH, status: "active", createdAt: new Date().toISOString() },
+        { uid: "USR-EDGAR-001",  email: "edgarlovera20@gmail.com", role: "gerente", nombres: "Edgar Lovera",  password_hash: ADMIN_DEFAULT_HASH, status: "active", createdAt: new Date().toISOString() }
       ],
       ventas: [],
       botCandidates: [],
@@ -414,37 +593,85 @@ async function startServer() {
         { id: 'WA-REC-005', nombre: 'Reclutamiento 5',             phoneId: '', accessToken: '', tipo: 'reclutamiento', orden: 5, activo: true,  status: 'sin_configurar' },
         { id: 'WA-CLI-001', nombre: 'Clientes — Seguimiento',      phoneId: '', accessToken: '', tipo: 'clientes',      orden: 1, activo: true,  status: 'sin_configurar' },
       ],
+      fbAccounts: [],
+      waQRSessions: [],
+      telegramBots: [],
     };
   };
-  const saveMockDb = (db: MockDB) => {
-    try { fs.writeFileSync(MOCK_DB_FILE, JSON.stringify(db, null, 2)); } catch {}
+  // Mutex para serializar escrituras al MockDB — evita race conditions cuando
+  // múltiples requests modifican el JSON simultáneamente.
+  const dbMutex = new Mutex();
+
+  const saveMockDb = (db: MockDB): void => {
+    // Fire-and-forget con mutex: serializa las escrituras sin bloquear el
+    // event loop (usa fs.promises internamente).
+    dbMutex.runExclusive(async () => {
+      try {
+        await fs.promises.writeFile(MOCK_DB_FILE, JSON.stringify(db, null, 2));
+      } catch (err) {
+        console.error("[MockDB] Error escribiendo .mockdb.json:", err);
+      }
+    }).catch(() => {}); // la promesa de runExclusive no se puede perder
   };
 
   const mockDb = loadMockDb();
 
-  // ── Session store (RBAC) ─────────────────────────────────────────────────
-  const sessionStore = new Map<string, { uid: string; email: string; role: string; exp: number }>();
-  setInterval(() => {
-    const now = Date.now();
-    sessionStore.forEach((v, k) => { if (now > v.exp) sessionStore.delete(k); });
-  }, 60_000);
+  // ── JWT Auth + RBAC ──────────────────────────────────────────────────────
+  // Access token: 15 min, stateless JWT.
+  // Refresh token: 7 días, hash almacenado en DB (o en memoria cuando MockDB).
+  // El endpoint /api/auth/refresh rota el refresh token en cada uso.
 
-  const issueToken = (uid: string, email: string, role: string): string => {
-    const token = crypto.randomBytes(32).toString('hex');
-    sessionStore.set(token, { uid, email, role, exp: Date.now() + 8 * 3600_000 }); // 8h
-    return token;
+  /** Revoked refresh tokens (fallback cuando no hay PostgreSQL) */
+  const revokedRefreshHashes = new Set<string>();
+  // Limpieza periódica — en producción Redis TTL se encarga automáticamente
+  setInterval(() => revokedRefreshHashes.clear(), 24 * 3600_000);
+
+  /** Helper: parsea cookies del header sin cookie-parser */
+  const parseCookies = (req: any): Record<string, string> => {
+    const list: Record<string, string> = {};
+    const header = req.headers?.cookie || '';
+    header.split(';').forEach((part: string) => {
+      const [name, ...rest] = part.split('=');
+      if (name) list[name.trim()] = decodeURIComponent(rest.join('=').trim());
+    });
+    return list;
+  };
+
+  /** Emite access + refresh tokens y persiste el hash del refresh en DB */
+  const issueTokenPair = async (uid: string, email: string, role: string) => {
+    const payload = { uid, email, role };
+    const accessToken  = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+    if (isDbConnected) {
+      const tokenHash = hashToken(refreshToken);
+      await pool.query(
+        `INSERT INTO refresh_tokens (user_uid, token_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+        [uid, tokenHash]
+      );
+    }
+    return { accessToken, refreshToken };
+  };
+
+  /** Opciones de cookie para el refresh token */
+  const refreshCookieOpts = {
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure:   IS_PROD,
+    maxAge:   7 * 24 * 60 * 60 * 1000,
+    path:     '/api/auth',
   };
 
   const requireRole = (...allowed: string[]) =>
     (req: any, res: any, next: any) => {
-      const token = (req.headers.authorization || '').replace('Bearer ', '');
+      const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
       if (!token) return res.status(401).json({ error: 'No autenticado' });
-      const sess = sessionStore.get(token);
-      if (!sess || Date.now() > sess.exp) return res.status(401).json({ error: 'Sesión expirada' });
-      const normalised = sess.role.toLowerCase();
+      const payload = verifyAccessToken(token);
+      if (!payload) return res.status(401).json({ error: 'Sesión expirada' });
+      const normalised = payload.role.toLowerCase();
       if (allowed.length && !allowed.some(r => normalised.includes(r.toLowerCase())))
         return res.status(403).json({ error: 'Sin permisos para esta acción' });
-      (req as any).sess = sess;
+      (req as any).sess = payload; // backward compat con el resto del servidor
       next();
     };
 
@@ -461,22 +688,6 @@ async function startServer() {
     });
   };
 
-  // ── In-memory rate limiter ────────────────────────────────────────────────
-  const rateCounts = new Map<string, { count: number; reset: number }>();
-  const rateLimit = (max: number, windowMs: number) =>
-    (req: any, res: any, next: any) => {
-      const key = req.ip || 'unknown';
-      const now = Date.now();
-      const entry = rateCounts.get(key);
-      if (!entry || now > entry.reset) {
-        rateCounts.set(key, { count: 1, reset: now + windowMs });
-        return next();
-      }
-      entry.count++;
-      if (entry.count > max) return res.status(429).json({ error: 'Demasiadas solicitudes, espera un momento' });
-      next();
-    };
-
   // ── Audit helper ─────────────────────────────────────────────────────────
   const audit = (uid: string, email: string, accion: string, modulo: string, detalles?: any) => {
     if (!mockDb.auditLog) mockDb.auditLog = [];
@@ -485,15 +696,14 @@ async function startServer() {
     saveMockDb(mockDb);
   };
 
-  /** Lee la sesion de cualquier request (sin requerir auth). */
+  /** Lee la sesión de cualquier request (sin requerir auth).
+   *  SEGURIDAD: no confía en headers x-user-* del cliente — solo en el JWT firmado. */
   const peekSession = (req: any): { uid: string; email: string; role?: string } => {
-    const token = (req.headers?.authorization || '').replace('Bearer ', '');
-    const sess = token ? sessionStore.get(token) : null;
-    if (sess && Date.now() < sess.exp) return { uid: sess.uid, email: sess.email, role: sess.role };
-    // Fallback: aceptamos identidad declarada en headers para clientes anonimos
-    const headerUid   = String(req.headers?.['x-user-uid']   || req.body?._actor_uid   || 'anonymous');
-    const headerEmail = String(req.headers?.['x-user-email'] || req.body?._actor_email || '');
-    return { uid: headerUid, email: headerEmail };
+    const token = (req.headers?.authorization || '').replace('Bearer ', '').trim();
+    const payload = token ? verifyAccessToken(token) : null;
+    return payload
+      ? { uid: payload.uid, email: payload.email, role: payload.role }
+      : { uid: 'anonymous', email: '' };
   };
 
   // ── Notification helper ───────────────────────────────────────────────────
@@ -510,90 +720,266 @@ async function startServer() {
   };
 
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        uid VARCHAR(255) UNIQUE,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        usuario VARCHAR(255) UNIQUE,
-        password_hash VARCHAR(255) NOT NULL,
-        role VARCHAR(50) DEFAULT 'asesor',
-        nombres VARCHAR(255),
-        apellidos VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS ventas (
-        folio VARCHAR(255) PRIMARY KEY,
-        estado VARCHAR(50) DEFAULT 'pendiente',
-        paquete_nombre VARCHAR(255),
-        nombres VARCHAR(255),
-        telefono VARCHAR(50),
-        renta_mensual NUMERIC,
-        data JSONB,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log("Database initialized successfully.");
+    // Ejecutar migraciones versionadas antes de arrancar las rutas
+    const { runMigrations } = await import('./migrations/migrate.js');
+    await runMigrations(pool);
+    console.log("[DB] PostgreSQL listo.");
     isDbConnected = true;
-  } catch (err) {
-    console.warn("No se pudo conectar a PostgreSQL. Usando Mock DB.");
+  } catch (err: any) {
+    console.warn(`[DB] No se pudo conectar a PostgreSQL (${err?.message ?? err}). Usando Mock DB.`);
   }
 
   // ================= API ROUTES (Auth & CRM) =================
-  app.post("/api/auth/register", async (req, res) => {
-    try {
-      const { email, password, nombres, apellidoPaterno, puestoActual, usuario } = req.body;
-      const uid = "USR-" + Date.now();
-      const password_hash = hashPassword(password);
 
-      if (isDbConnected) {
-        await pool.query(
-          "INSERT INTO users (uid, email, usuario, password_hash, role, nombres, apellidos) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-          [uid, email, usuario, password_hash, puestoActual, nombres, apellidoPaterno]
-        );
-      } else {
-        if (mockDb.users.find((u: MockUser) => u.email === email)) {
-          return res.status(400).json({ error: "Email ya registrado" });
-        }
-        mockDb.users.push({ uid, email, role: puestoActual, nombres, password_hash });
-        saveMockDb(mockDb);
-      }
-
-      res.json({ uid, email, role: puestoActual, displayName: nombres });
-    } catch (e: any) {
-      console.error(e);
-      res.status(400).json({ error: e.message || "Error registrando usuario" });
-    }
-  });
-
+  // ── Login ────────────────────────────────────────────────────────────────
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { email, password } = req.body;
-      let user;
+      const parsed = loginSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
+      const { email, password } = parsed.data;
 
+      let user: any;
       if (isDbConnected) {
-        const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
-        if (rows.length === 0) return res.status(401).json({ error: "Usuario no encontrado" });
+        const { rows } = await pool.query(
+          "SELECT * FROM users WHERE email = $1 AND status != 'inactive'", [email]
+        );
+        if (rows.length === 0) return res.status(401).json({ error: 'Credenciales inválidas' });
         user = rows[0];
       } else {
         user = mockDb.users.find((u: MockUser) => u.email === email);
-        if (!user) return res.status(401).json({ error: "Usuario no encontrado. Usa admin@hdreams.com / Admin123! o registrate primero." });
+        if (!user) return res.status(401).json({ error: 'Credenciales inválidas' });
       }
 
-      if (user.password_hash !== hashPassword(password)) {
-        return res.status(401).json({ error: "Contrasena incorrecta" });
+      const { valid, newHash } = await verifyPassword(password, user.password_hash);
+      if (!valid) return res.status(401).json({ error: 'Credenciales inválidas' });
+
+      if (newHash) {
+        user.password_hash = newHash;
+        if (isDbConnected) await pool.query("UPDATE users SET password_hash=$1 WHERE uid=$2", [newHash, user.uid]);
+        else saveMockDb(mockDb);
       }
 
-      const sessionToken = issueToken(user.uid, user.email, user.role);
+      const { accessToken, refreshToken } = await issueTokenPair(user.uid, user.email, user.role);
+      res.cookie('hdreams_rt', refreshToken, refreshCookieOpts);
       audit(user.uid, user.email, 'LOGIN', 'auth');
-      res.json({ uid: user.uid, email: user.email, role: user.role, displayName: user.nombres, sessionToken });
+      res.json({ uid: user.uid, email: user.email, role: user.role, displayName: user.nombres, sessionToken: accessToken });
     } catch (e: any) {
-      res.status(500).json({ error: "Error en el servidor" });
+      console.error('[auth/login]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
     }
   });
 
-  app.get("/api/ventas", async (req, res) => {
+  // ── Refresh token (rotación) ─────────────────────────────────────────────
+  app.post("/api/auth/refresh", async (req, res) => {
+    try {
+      const cookies = parseCookies(req);
+      const oldRefresh = cookies['hdreams_rt'];
+      if (!oldRefresh) return res.status(401).json({ error: 'No autenticado' });
+
+      const payload = verifyRefreshToken(oldRefresh);
+      if (!payload) return res.status(401).json({ error: 'Sesión expirada' });
+
+      const oldHash = hashToken(oldRefresh);
+
+      if (isDbConnected) {
+        const { rowCount } = await pool.query(
+          "DELETE FROM refresh_tokens WHERE token_hash=$1 AND expires_at > NOW()", [oldHash]
+        );
+        if (!rowCount) return res.status(401).json({ error: 'Sesión inválida o expirada' });
+      } else {
+        if (revokedRefreshHashes.has(oldHash)) return res.status(401).json({ error: 'Token ya utilizado' });
+        revokedRefreshHashes.add(oldHash);
+      }
+
+      const { accessToken, refreshToken: newRefresh } = await issueTokenPair(payload.uid, payload.email, payload.role);
+      res.cookie('hdreams_rt', newRefresh, refreshCookieOpts);
+      res.json({ sessionToken: accessToken });
+    } catch (e: any) {
+      console.error('[auth/refresh]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Logout ───────────────────────────────────────────────────────────────
+  app.post("/api/auth/logout", async (req, res) => {
+    try {
+      const cookies = parseCookies(req);
+      const refreshToken = cookies['hdreams_rt'];
+      if (refreshToken) {
+        const tokenHash = hashToken(refreshToken);
+        if (isDbConnected) {
+          await pool.query("DELETE FROM refresh_tokens WHERE token_hash=$1", [tokenHash]);
+        } else {
+          revokedRefreshHashes.add(tokenHash);
+        }
+      }
+      res.clearCookie('hdreams_rt', { path: '/api/auth' });
+      const sess = peekSession(req);
+      if (sess.uid !== 'anonymous') audit(sess.uid, sess.email, 'LOGOUT', 'auth');
+      res.json({ ok: true });
+    } catch (e: any) {
+      console.error('[auth/logout]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Registro por invitación (reemplaza el registro público) ──────────────
+  app.post("/api/auth/register-with-invite", async (req, res) => {
+    try {
+      const parsed = registerSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
+      const { inviteToken, password, nombres, apellidoPaterno, usuario } = parsed.data;
+
+      let finalEmail: string;
+      let finalRole:  string;
+
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT * FROM invitations WHERE token=$1 AND used=false AND expires_at > NOW()", [inviteToken]
+        );
+        if (rows.length === 0) return res.status(400).json({ error: 'Invitación inválida o expirada' });
+        finalEmail = rows[0].email;
+        finalRole  = rows[0].role;
+        const existing = await pool.query("SELECT uid FROM users WHERE email=$1", [finalEmail]);
+        if (existing.rows.length > 0) return res.status(409).json({ error: 'Este email ya tiene cuenta' });
+      } else {
+        // MockDB fallback — invitaciones guardadas en memoria
+        const inv = (mockDb as any).__invitations?.get(inviteToken);
+        if (!inv || Date.now() > inv.expires) return res.status(400).json({ error: 'Invitación inválida o expirada' });
+        if (mockDb.users.find((u: MockUser) => u.email === inv.email))
+          return res.status(409).json({ error: 'Este email ya tiene cuenta' });
+        finalEmail = inv.email;
+        finalRole  = inv.role;
+      }
+
+      const uid           = 'USR-' + Date.now();
+      const password_hash = await hashPassword(password);
+      const finalUsuario  = usuario || finalEmail.split('@')[0];
+
+      if (isDbConnected) {
+        await pool.query(
+          "INSERT INTO users (uid, email, usuario, password_hash, role, nombres, apellidos) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+          [uid, finalEmail, finalUsuario, password_hash, finalRole, nombres, apellidoPaterno]
+        );
+        await pool.query("UPDATE invitations SET used=true, used_at=NOW() WHERE token=$1", [inviteToken]);
+      } else {
+        mockDb.users.push({ uid, email: finalEmail, role: finalRole, nombres, password_hash });
+        (mockDb as any).__invitations?.delete(inviteToken);
+        saveMockDb(mockDb);
+      }
+
+      audit(uid, finalEmail, 'REGISTER', 'auth', { role: finalRole });
+      res.status(201).json({ uid, email: finalEmail, role: finalRole, displayName: nombres });
+    } catch (e: any) {
+      console.error('[auth/register-with-invite]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Crear invitación (solo gerente/administracion) ───────────────────────
+  app.post("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const parsed = inviteSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
+      const { email, role, nombres } = parsed.data;
+      const sess     = (req as any).sess;
+      const token    = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 48 * 3600_000);
+
+      if (isDbConnected) {
+        const existing = await pool.query(
+          "SELECT uid FROM users WHERE email=$1", [email]
+        );
+        if (existing.rows.length > 0) return res.status(409).json({ error: 'Este email ya tiene cuenta' });
+        await pool.query(
+          "INSERT INTO invitations (token, email, role, nombres, created_by_uid, expires_at) VALUES ($1,$2,$3,$4,$5,$6)",
+          [token, email, role, nombres ?? null, sess.uid, expiresAt]
+        );
+      } else {
+        if (!(mockDb as any).__invitations) (mockDb as any).__invitations = new Map();
+        (mockDb as any).__invitations.set(token, { email, role, nombres, expires: expiresAt.getTime(), createdBy: sess.uid });
+      }
+
+      audit(sess.uid, sess.email, 'CREATE_INVITATION', 'auth', { email, role });
+      res.status(201).json({ token, email, role, expiresAt: expiresAt.toISOString() });
+    } catch (e: any) {
+      console.error('[invitations]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Listar invitaciones activas (gerente/administracion) ─────────────────
+  app.get("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT id, email, role, nombres, expires_at, used, created_at FROM invitations ORDER BY created_at DESC LIMIT 100"
+        );
+        res.json(rows);
+      } else {
+        const inv = (mockDb as any).__invitations as Map<string, any> | undefined;
+        if (!inv) return res.json([]);
+        const list = Array.from(inv.entries()).map(([token, v]) => ({ token, ...v }));
+        res.json(list);
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Revocar invitación ───────────────────────────────────────────────────
+  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const { token } = req.params;
+      if (isDbConnected) {
+        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
+      } else {
+        (mockDb as any).__invitations?.delete(token);
+      }
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Lista de usuarios (gerente/administracion) ───────────────────────────
+  app.get("/api/users", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT uid, email, usuario, role, nombres, apellidos, status, created_at FROM users ORDER BY created_at DESC"
+        );
+        res.json(rows);
+      } else {
+        res.json(mockDb.users.map(({ password_hash: _, ...u }: any) => u));
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Perfil propio ────────────────────────────────────────────────────────
+  app.get("/api/profile", requireRole(), async (req, res) => {
+    try {
+      const { uid } = (req as any).sess;
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT uid, email, usuario, role, nombres, apellidos, status, created_at FROM users WHERE uid=$1", [uid]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+        res.json(rows[0]);
+      } else {
+        const u = mockDb.users.find((u: MockUser) => u.uid === uid);
+        if (!u) return res.status(404).json({ error: 'Usuario no encontrado' });
+        const { password_hash: _, ...safe } = u as any;
+        res.json(safe);
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  app.get("/api/ventas", requireRole('gerente', 'administracion', 'supervisor', 'vendedor'), async (req, res) => {
     try {
       if (isDbConnected) {
         const { rows } = await pool.query("SELECT * FROM ventas ORDER BY created_at DESC");
@@ -606,7 +992,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ventas", async (req, res) => {
+  app.post("/api/ventas", requireRole('gerente', 'administracion', 'supervisor', 'vendedor'), async (req, res) => {
     try {
       const { folio, estado, paqueteNombre, nombres, telefonoTitular, rentaMensual, ...data } = req.body;
       const isUpdate = !!mockDb.ventas.find(v => v.folio === folio);
@@ -671,7 +1057,7 @@ async function startServer() {
   };
 
   // POST /api/twilio/sms
-  app.post("/api/twilio/sms", async (req, res) => {
+  app.post("/api/twilio/sms", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), async (req, res) => {
     try {
       const { to, message } = req.body as { to: string; message: string };
       if (!to || !message) return res.status(400).json({ error: "Faltan: to, message" });
@@ -685,7 +1071,7 @@ async function startServer() {
   });
 
   // POST /api/twilio/whatsapp
-  app.post("/api/twilio/whatsapp", async (req, res) => {
+  app.post("/api/twilio/whatsapp", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), async (req, res) => {
     try {
       const { to, message } = req.body as { to: string; message: string };
       if (!to || !message) return res.status(400).json({ error: "Faltan: to, message" });
@@ -701,7 +1087,7 @@ async function startServer() {
   });
 
   // POST /api/twilio/call
-  app.post("/api/twilio/call", async (req, res) => {
+  app.post("/api/twilio/call", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), async (req, res) => {
     try {
       const { to, twiml, callbackUrl } = req.body as { to: string; twiml?: string; callbackUrl?: string };
       if (!to) return res.status(400).json({ error: "Falta: to" });
@@ -950,7 +1336,7 @@ async function startServer() {
   });
 
   // GET /api/voice/log — ultimas N entradas de la bitacora en memoria
-  app.get("/api/voice/log", (req, res) => {
+  app.get("/api/voice/log", requireRole('gerente', 'administracion', 'supervisor'), (req, res) => {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || "50"), 10) || 50, 1), 100);
     res.json({ count: voiceCallLog.length, entries: voiceCallLog.slice(0, limit) });
   });
@@ -1160,18 +1546,50 @@ Si la información no es suficiente para responder, indícalo.`;
   // ================= AI ROUTE (Gemini) — con inyección de conocimiento =================
   app.post("/api/generate-response", async (req, res) => {
     try {
-      const { systemPrompt, userMessage } = req.body;
-      // Inyectar contexto de knowledge base si hay docs relevantes
-      const kbChunks = searchKnowledge(userMessage, 3);
+      const { systemPrompt, userMessage, history = [] } = req.body as {
+        systemPrompt: string;
+        userMessage:  string;
+        history?:     { role: 'user' | 'model'; text: string }[];
+      };
+
+      // Contexto de knowledge base
+      const kbChunks  = searchKnowledge(userMessage, 3);
       const kbContext = kbChunks.length > 0
-        ? `\n\n--- INFORMACIÓN DE LA BASE DE CONOCIMIENTO ---\n${kbChunks.join('\n\n')}\n--- FIN ---\n`
+        ? `\n\n--- BASE DE CONOCIMIENTO ---\n${kbChunks.join('\n\n')}\n--- FIN ---`
         : '';
-      const prompt = `${systemPrompt}${kbContext}\n\nUsuario: ${userMessage}`;
-      const text = await geminiGenerate(prompt);
+
+      // Memoria del agente de chat principal (auto-aprendizaje)
+      const chatMemory = mockDb.agentMemory?.filter(m => m.agentId === 'CHAT_PRINCIPAL') ?? [];
+      const summary    = chatMemory.find(m => m.kind === 'summary');
+      const recent     = chatMemory
+        .filter(m => m.kind === 'interaction')
+        .sort((a, b) => b.ts.localeCompare(a.ts))
+        .slice(0, 5)
+        .reverse();
+      const memContext = summary
+        ? `\n\n--- CONTEXTO APRENDIDO ---\n${summary.content}\n--- FIN ---`
+        : '';
+
+      // Historial de la conversación actual
+      const historyContext = history.length > 0
+        ? '\n\n--- CONVERSACIÓN PREVIA ---\n' +
+          history.map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.text}`).join('\n') +
+          '\n--- FIN ---'
+        : '';
+
+      // Interacciones recientes aprendidas
+      const recentCtx = recent.length > 0
+        ? '\n\n--- INTERACCIONES RECIENTES ---\n' +
+          recent.map(e => e.content).join('\n') +
+          '\n--- FIN ---'
+        : '';
+
+      const prompt = `${systemPrompt}${kbContext}${memContext}${recentCtx}${historyContext}\n\nUsuario: ${userMessage}`;
+      const text   = await geminiGenerate(prompt);
       res.json({ text });
     } catch (error: any) {
-      console.error("Gemini Error:", error);
-      res.status(500).json({ error: error.message || "Error generating AI response" });
+      console.error("[AI/generate-response]", error);
+      res.status(500).json({ error: error.message || "Error generando respuesta de IA" });
     }
   });
 
@@ -1213,7 +1631,7 @@ El checklist debe tener entre 5 y 8 pasos relevantes para ${issueType || 'valida
     }
   });
 
-  // ================= OCR ROUTE (Gemini) =================
+  // ================= OCR ROUTE (Cloud Vision → IA parser / Gemini Vision fallback) =================
   app.post("/api/ocr", async (req, res) => {
     try {
       const { image, docType } = req.body;
@@ -1234,37 +1652,99 @@ El checklist debe tener entre 5 y 8 pasos relevantes para ${issueType || 'valida
         return res.status(400).json({ error: 'Archivo demasiado grande para OCR (máx. ~15 MB)' });
       }
 
-      const ocrPrompt = `Eres un sistema OCR especializado en documentos mexicanos. Analiza CUIDADOSAMENTE esta imagen de un ${docType.toUpperCase()}.
+      const ocrPrompts: Record<string, string> = {
+        ine: `Eres un sistema OCR especializado en credenciales INE/IFE mexicanas.
+Analiza CUIDADOSAMENTE esta imagen. Puede ser el FRENTE o el REVERSO de la credencial.
 
 INSTRUCCIONES CRÍTICAS:
-1. Lee cada carácter con precisión. Los documentos INE tienen texto impreso claro.
-2. El CURP tiene exactamente 18 caracteres alfanuméricos.
-3. El folio/clave de elector (INE) tiene 18-20 caracteres.
-4. Lee la dirección completa del reverso si es INE.
+1. Lee cada carácter con máxima precisión — el texto impreso es claro.
+2. CURP: exactamente 18 caracteres alfanuméricos en mayúsculas (ej: LOEJ850312HDFVRG09).
+3. Clave de elector/folio: 18-20 caracteres alfanuméricos (suele estar en el reverso).
+4. La dirección SIEMPRE está en el REVERSO de la INE — si ves frente, los campos de dirección irán vacíos.
+5. No inventes datos. Si un campo no es legible o no está en la imagen, usa "".
 
-Extrae y devuelve EXACTAMENTE este JSON (sin markdown, sin texto adicional):
+Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
 {
-  "nombres": "nombre(s) de pila completos",
+  "nombres": "nombre(s) de pila tal como aparecen",
   "apellidoPaterno": "primer apellido",
   "apellidoMaterno": "segundo apellido",
-  "curp": "CURP de 18 caracteres en mayúsculas",
-  "folioIne": "folio o clave de elector si es INE, sino vacío",
+  "curp": "CURP 18 caracteres mayúsculas o vacío",
+  "folioIne": "clave de elector o folio 18-20 chars o vacío",
+  "calle": "nombre de la calle o vacío",
+  "numeroExterior": "número exterior o vacío",
+  "numeroInterior": "número interior o vacío",
+  "colonia": "nombre de la colonia o vacío",
+  "codigoPostal": "5 dígitos o vacío",
+  "ciudad": "municipio o ciudad o vacío",
+  "delegacion": "delegación, alcaldía o estado o vacío"
+}`,
+
+        curp: `Eres un sistema OCR especializado en documentos CURP mexicanos.
+Analiza esta imagen y extrae ÚNICAMENTE el CURP y el nombre completo si están visibles.
+
+INSTRUCCIONES:
+1. El CURP tiene EXACTAMENTE 18 caracteres alfanuméricos en mayúsculas.
+2. Formato típico: 4 letras + 6 dígitos fecha + 1 letra sexo + 2 letras estado + 3 letras consonantes + 2 dígitos.
+3. Los demás campos van vacíos — un documento CURP no tiene dirección.
+
+Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
+{
+  "nombres": "nombre(s) de pila o vacío",
+  "apellidoPaterno": "primer apellido o vacío",
+  "apellidoMaterno": "segundo apellido o vacío",
+  "curp": "CURP 18 caracteres mayúsculas",
+  "folioIne": "",
+  "calle": "",
+  "numeroExterior": "",
+  "numeroInterior": "",
+  "colonia": "",
+  "codigoPostal": "",
+  "ciudad": "",
+  "delegacion": ""
+}`,
+
+        comprobante: `Eres un sistema OCR especializado en comprobantes de domicilio mexicanos (recibos de luz CFE, agua SACMEX/CAEM, teléfono, gas, internet).
+Analiza esta imagen y extrae la dirección del titular.
+
+INSTRUCCIONES CRÍTICAS:
+1. Busca la sección "DOMICILIO", "DIRECCIÓN DEL SERVICIO" o "DIRECCIÓN DEL USUARIO".
+2. Separa correctamente: calle, número exterior, número interior, colonia, C.P., municipio/ciudad, estado.
+3. El código postal son EXACTAMENTE 5 dígitos.
+4. No extraigas CURP ni folio INE — estos campos van vacíos en un comprobante.
+5. Si un campo no aparece claramente, usa "".
+
+Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
+{
+  "nombres": "",
+  "apellidoPaterno": "",
+  "apellidoMaterno": "",
+  "curp": "",
+  "folioIne": "",
   "calle": "nombre de la calle",
   "numeroExterior": "número exterior",
   "numeroInterior": "número interior o vacío",
   "colonia": "nombre de la colonia",
   "codigoPostal": "5 dígitos",
-  "ciudad": "ciudad o municipio",
-  "delegacion": "delegación o alcaldía o estado"
-}
+  "ciudad": "municipio o ciudad",
+  "delegacion": "alcaldía, delegación o estado"
+}`,
+      };
 
-Si un campo NO ES VISIBLE en la imagen, usa cadena vacía "".
-RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
+      const ocrPrompt = ocrPrompts[docType] ?? ocrPrompts['ine'];
 
-      const text = await geminiGenerate([
-        ocrPrompt,
-        { inlineData: { data: b64, mimeType } }
-      ], { visionMode: true });
+      let text: string;
+      if (googleVisionKey) {
+        // Cloud Vision extrae texto crudo → IA parsea a JSON estructurado (más barato)
+        const rawText = await cloudVisionOCR(b64, mimeType);
+        const textOnlyPrompt = `${ocrPrompt}\n\nTexto extraído por OCR de la imagen:\n\`\`\`\n${rawText}\n\`\`\`\n\nParsea el texto anterior y devuelve únicamente el JSON solicitado.`;
+        text = await aiGenerate(textOnlyPrompt);
+      } else {
+        // Fallback: Gemini Vision con imagen completa
+        text = await geminiGenerate([
+          ocrPrompt,
+          { inlineData: { data: b64, mimeType } }
+        ], { visionMode: true });
+      }
 
       // Robust JSON extraction — handles markdown fences and extra text
       const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -1290,10 +1770,212 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
       res.json(normalised);
     } catch (error: any) {
       console.error("OCR Error:", error);
-      res.status(500).json({ error: error.message || "Error processing document" });
+      const isQuota = error?.message?.includes('quota') || error?.message?.includes('rate') || error?.status === 429;
+      const userMsg = isQuota
+        ? 'Límite de OCR temporalmente alcanzado. Espera 1 minuto e intenta de nuevo, o ingresa los datos manualmente.'
+        : (error.message || 'Error procesando documento');
+      res.status(isQuota ? 429 : 500).json({ error: userMsg });
     }
   });
 
+  // ================= GEOCODE ROUTE (Google Maps Geocoding API) =================
+  app.post("/api/geocode", async (req, res) => {
+    try {
+      const { address } = req.body as { address: string };
+      if (!address?.trim()) return res.status(400).json({ error: "Dirección requerida" });
+      if (!googleMapsKey) return res.status(503).json({ error: "GOOGLE_MAPS_API_KEY no configurada — agrega la clave en .env" });
+
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${googleMapsKey}&region=mx&language=es`;
+      const resp = await fetch(url);
+      const json = await resp.json() as any;
+
+      if (json.status !== "OK" || !json.results?.length) {
+        return res.status(404).json({ error: `Sin resultados para la dirección proporcionada (${json.status})` });
+      }
+      const loc = json.results[0].geometry.location as { lat: number; lng: number };
+      res.json({
+        lat: loc.lat,
+        lng: loc.lng,
+        formattedAddress: json.results[0].formatted_address as string,
+      });
+    } catch (error: any) {
+      console.error("Geocode Error:", error);
+      res.status(500).json({ error: error.message || "Error al geocodificar" });
+    }
+  });
+
+  // ================= EXPEDIENTES (PDFs · Audios · Videos) =================
+  // Estructura física en disco:
+  //   uploads/expedientes/{folio}/
+  //     ├── documentos/   (INE frente/reverso, CURP, comprobante de domicilio)
+  //     ├── audios/       (grabaciones de llamadas de validación)
+  //     └── videos/       (video-firmas)
+  //
+  // Pipeline: el frontend manda base64 vía JSON al endpoint de upload, el server
+  // decodifica y guarda al disco. Devuelve el path relativo. Cuando se finaliza
+  // la venta (POST /api/ventas), se prefiere el path sobre el base64 — los
+  // archivos pesados ya no se duplican dentro del JSON de la venta.
+  const UPLOADS_ROOT = path.join(process.cwd(), 'uploads', 'expedientes');
+  if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+
+  type ExpedienteTipo =
+    | 'ine_frente' | 'ine_reverso' | 'curp' | 'comprobante'
+    | 'audio_validacion' | 'videofirma';
+
+  const TIPO_TO_SUBFOLDER: Record<ExpedienteTipo, string> = {
+    ine_frente:       'documentos',
+    ine_reverso:      'documentos',
+    curp:             'documentos',
+    comprobante:      'documentos',
+    audio_validacion: 'audios',
+    videofirma:       'videos',
+  };
+
+  const mimeToExt = (mt: string): string => {
+    const m = mt.toLowerCase();
+    if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
+    if (m === 'image/png')  return 'png';
+    if (m === 'image/webp') return 'webp';
+    if (m === 'image/gif')  return 'gif';
+    if (m === 'application/pdf') return 'pdf';
+    if (m === 'audio/webm') return 'webm';
+    if (m === 'audio/ogg')  return 'ogg';
+    if (m === 'audio/mpeg' || m === 'audio/mp3') return 'mp3';
+    if (m === 'audio/wav')  return 'wav';
+    if (m === 'video/webm') return 'webm';
+    if (m === 'video/mp4')  return 'mp4';
+    return 'bin';
+  };
+
+  // Sanitiza folio para usarlo como nombre de carpeta (path traversal safe).
+  const safeFolio = (folio: string): string =>
+    String(folio || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+
+  // Body parser dedicado con límite alto solo para uploads de expediente.
+  // (videos webm de 60s pueden pesar 10-30 MB en base64.)
+  const expedienteUploadJson = express.json({ limit: '50mb' });
+
+  // POST /api/expediente/:folio/upload — guarda un archivo en su subcarpeta.
+  // Body: { tipo, base64, mimetype, filename? }
+  app.post('/api/expediente/:folio/upload', expedienteUploadJson, async (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      if (!folio) return res.status(400).json({ error: 'Folio inválido' });
+
+      const { tipo, base64, mimetype, filename } = req.body as {
+        tipo: ExpedienteTipo; base64: string; mimetype: string; filename?: string;
+      };
+      if (!tipo || !base64 || !mimetype) {
+        return res.status(400).json({ error: 'Faltan campos: tipo, base64, mimetype' });
+      }
+      const subfolder = TIPO_TO_SUBFOLDER[tipo];
+      if (!subfolder) {
+        return res.status(400).json({
+          error: `Tipo inválido: ${tipo}. Permitidos: ${Object.keys(TIPO_TO_SUBFOLDER).join(', ')}`
+        });
+      }
+
+      const dir = path.join(UPLOADS_ROOT, folio, subfolder);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+      const ext = mimeToExt(mimetype);
+      // Documentos: nombre estable (ine_frente.jpg) — sobreescribe si recapturan.
+      // Audios/videos: timestamp para conservar histórico de intentos de grabación.
+      const isHistoric = subfolder === 'audios' || subfolder === 'videos';
+      const safeFilename = filename
+        ? filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80)
+        : isHistoric
+          ? `${tipo}_${Date.now()}.${ext}`
+          : `${tipo}.${ext}`;
+      const fullPath = path.join(dir, safeFilename);
+
+      // Decodifica base64 (admite data-URL completa o solo el cuerpo).
+      const cleanB64 = base64.includes(',') ? base64.split(',')[1] : base64;
+      const buf = Buffer.from(cleanB64, 'base64');
+      // Hard cap por archivo: 50 MB (después del decode, no del base64).
+      if (buf.length > 50 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Archivo > 50 MB no permitido' });
+      }
+      fs.writeFileSync(fullPath, buf);
+
+      const relativePath = `/uploads/expedientes/${folio}/${subfolder}/${safeFilename}`;
+
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'subir_archivo_expediente', 'expedientes', {
+        folio, tipo, path: relativePath, size: buf.length, mimetype,
+      });
+
+      res.json({ path: relativePath, size: buf.length, tipo, folio });
+    } catch (e: any) {
+      console.error('Expediente upload error:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/expediente/:folio/files — lista archivos del expediente.
+  app.get('/api/expediente/:folio/files', (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const baseDir = path.join(UPLOADS_ROOT, folio);
+      if (!fs.existsSync(baseDir)) return res.json({ folio, files: [] });
+
+      type FileEntry = {
+        subfolder: string; filename: string; path: string; size: number; mtime: string;
+      };
+      const result: FileEntry[] = [];
+      for (const sub of ['documentos', 'audios', 'videos']) {
+        const subDir = path.join(baseDir, sub);
+        if (!fs.existsSync(subDir)) continue;
+        for (const fname of fs.readdirSync(subDir)) {
+          const full = path.join(subDir, fname);
+          const stat = fs.statSync(full);
+          if (!stat.isFile()) continue;
+          result.push({
+            subfolder: sub,
+            filename: fname,
+            path: `/uploads/expedientes/${folio}/${sub}/${fname}`,
+            size: stat.size,
+            mtime: stat.mtime.toISOString(),
+          });
+        }
+      }
+      res.json({ folio, files: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/expediente/:folio/file — elimina un archivo (solo gerente/admin).
+  app.delete('/api/expediente/:folio/file', requireRole('gerente', 'administracion'), (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const { subfolder, filename } = req.body as { subfolder: string; filename: string };
+      if (!subfolder || !filename) return res.status(400).json({ error: 'subfolder y filename requeridos' });
+      // Evita path traversal: subfolder solo puede ser una de las 3 carpetas conocidas.
+      if (!['documentos', 'audios', 'videos'].includes(subfolder)) {
+        return res.status(400).json({ error: 'subfolder inválido' });
+      }
+      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const full = path.join(UPLOADS_ROOT, folio, subfolder, safeName);
+      if (!fs.existsSync(full)) return res.status(404).json({ error: 'Archivo no encontrado' });
+      fs.unlinkSync(full);
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'eliminar_archivo_expediente', 'expedientes',
+        { folio, subfolder, filename: safeName });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Servir archivos estáticos /uploads/expedientes/* — autenticado vía Bearer
+  // header O ?token=... (los <img>/<audio>/<video> no envían Authorization).
+  const expedienteStaticAuth = (req: any, res: any, next: any) => {
+    const token = (req.headers?.authorization || '').replace('Bearer ', '').trim()
+                  || String(req.query?.token || '');
+    if (!token) return res.status(401).send('No autenticado');
+    const payload = verifyAccessToken(token);
+    if (!payload) return res.status(401).send('Sesión expirada');
   // ================= EXPEDIENTES (PDFs · Audios · Videos) =================
   // Estructura física en disco:
   //   uploads/expedientes/{folio}/
@@ -1470,6 +2152,10 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   };
   app.use('/uploads/expedientes', expedienteStaticAuth, express.static(UPLOADS_ROOT));
 
+  // ── RBAC global para todo /api/admin/* ──────────────────────────────────
+  // Un único middleware aquí protege TODAS las rutas que empiecen con /api/admin.
+  app.use('/api/admin', requireRole('gerente', 'administracion'));
+
   // ================= ADMIN: USUARIOS =================
 
   // GET /api/admin/users
@@ -1484,7 +2170,7 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
       if (!email || !password || !nombres) return res.status(400).json({ error: "Faltan campos: email, password, nombres" });
       if (mockDb.users.find(u => u.email === email)) return res.status(400).json({ error: "Email ya registrado" });
       const uid = "USR-" + Date.now();
-      const newUser: MockUser = { uid, email, role: role || "vendedor", nombres, password_hash: hashPassword(password), status: "active", createdAt: new Date().toISOString() };
+      const newUser: MockUser = { uid, email, role: role || "vendedor", nombres, password_hash: await hashPassword(password), status: "active", createdAt: new Date().toISOString() };
       mockDb.users.push(newUser);
       saveMockDb(mockDb);
       res.json({ uid, email, role: newUser.role, nombres, status: "active" });
@@ -1514,12 +2200,12 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   });
 
   // POST /api/admin/users/:uid/reset-password
-  app.post("/api/admin/users/:uid/reset-password", (req, res) => {
+  app.post("/api/admin/users/:uid/reset-password", async (req, res) => {
     const u = mockDb.users.find(x => x.uid === req.params.uid);
     if (!u) return res.status(404).json({ error: "Usuario no encontrado" });
     const { newPassword } = req.body;
     if (!newPassword) return res.status(400).json({ error: "Falta newPassword" });
-    u.password_hash = hashPassword(newPassword);
+    u.password_hash = await hashPassword(newPassword);
     saveMockDb(mockDb);
     res.json({ ok: true });
   });
@@ -1542,7 +2228,12 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   app.patch("/api/admin/expenses/:id", (req, res) => {
     const e = (mockDb.expenses || []).find(x => x.id === req.params.id);
     if (!e) return res.status(404).json({ error: "Gasto no encontrado" });
-    Object.assign(e, req.body);
+    // Allowlist: solo campos editables (id, userId, createdAt son inmutables)
+    const { amount, category, description, date } = req.body;
+    if (amount    !== undefined) e.amount      = amount;
+    if (category  !== undefined) e.category    = category;
+    if (description !== undefined) e.description = description;
+    if (date      !== undefined) e.date        = date;
     saveMockDb(mockDb);
     res.json(e);
   });
@@ -1565,10 +2256,10 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
 
   app.post("/api/admin/preferences/:uid", (req, res) => {
     if (!mockDb.userPrefs) mockDb.userPrefs = [];
-    // Support 'me' as uid — resolve from session token
-    const token = (req.headers.authorization || '').replace('Bearer ', '');
-    const sess  = token ? sessionStore.get(token) : null;
-    const uid   = req.params.uid === 'me' ? (sess?.uid || 'anonymous') : req.params.uid;
+    // Support 'me' as uid — resolve from JWT
+    const token   = (req.headers.authorization || '').replace('Bearer ', '').trim();
+    const payload = token ? verifyAccessToken(token) : null;
+    const uid     = req.params.uid === 'me' ? (payload?.uid || 'anonymous') : req.params.uid;
     const idx = mockDb.userPrefs.findIndex(p => p.userId === uid);
     const pref: UserPref = { ...req.body, userId: uid, updatedAt: new Date().toISOString() };
     if (idx >= 0) mockDb.userPrefs[idx] = pref;
@@ -1660,6 +2351,254 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
         account.lastChecked  = new Date().toISOString();
         saveMockDb(mockDb);
         return res.json({ ok: true, displayPhone: account.displayPhone, verifiedName: data.verified_name });
+      } else {
+        account.status = 'error';
+        account.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: false, error: data.error?.message || 'Error de autenticación Meta' });
+      }
+    } catch (e: any) {
+      account.status = 'error';
+      saveMockDb(mockDb);
+      return res.json({ ok: false, error: e.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  CANALES — WhatsApp QR (personal + business)
+  // ═══════════════════════════════════════════════════════════════
+
+  /** GET /api/canales/whatsapp-qr — list sessions */
+  app.get('/api/canales/whatsapp-qr', (_req, res) => {
+    res.json(mockDb.waQRSessions || []);
+  });
+
+  /** POST /api/canales/whatsapp-qr — create session record */
+  app.post('/api/canales/whatsapp-qr', requireRole('gerente', 'administracion'), (req, res) => {
+    if (!mockDb.waQRSessions) mockDb.waQRSessions = [];
+    const { nombre, tipo } = req.body as { nombre: string; tipo: 'personal'|'business' };
+    if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
+    const session: WAQRCanalSession = {
+      id: 'WQR-' + Date.now(),
+      nombre,
+      tipo: tipo || 'personal',
+      activo: true,
+      createdAt: new Date().toISOString(),
+    };
+    mockDb.waQRSessions.push(session);
+    saveMockDb(mockDb);
+    res.json(session);
+  });
+
+  /** PATCH /api/canales/whatsapp-qr/:id — update label/tipo */
+  app.patch('/api/canales/whatsapp-qr/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const s = (mockDb.waQRSessions || []).find(x => x.id === req.params.id);
+    if (!s) return res.status(404).json({ error: 'Sesión no encontrada' });
+    if (req.body.nombre) s.nombre = req.body.nombre;
+    if (req.body.tipo)   s.tipo   = req.body.tipo;
+    if (req.body.activo !== undefined) s.activo = req.body.activo;
+    saveMockDb(mockDb);
+    res.json(s);
+  });
+
+  /** DELETE /api/canales/whatsapp-qr/:id — delete + disconnect */
+  app.delete('/api/canales/whatsapp-qr/:id', requireRole('gerente', 'administracion'), async (req, res) => {
+    const before = (mockDb.waQRSessions || []).length;
+    mockDb.waQRSessions = (mockDb.waQRSessions || []).filter(x => x.id !== req.params.id);
+    if (mockDb.waQRSessions.length === before) return res.status(404).json({ error: 'Sesión no encontrada' });
+    await whatsappEngine.disconnect(req.params.id);
+    saveMockDb(mockDb);
+    res.json({ ok: true });
+  });
+
+  /** POST /api/canales/whatsapp-qr/:id/start — inicia o reanuda QR */
+  app.post('/api/canales/whatsapp-qr/:id/start', async (req, res) => {
+    const s = (mockDb.waQRSessions || []).find(x => x.id === req.params.id);
+    if (!s) return res.status(404).json({ error: 'Sesión no encontrada' });
+    const state = await whatsappEngine.start(req.params.id);
+    res.json({ ok: true, mode: whatsappEngine.getMode(), state });
+  });
+
+  /** GET /api/canales/whatsapp-qr/:id/status — poll QR / estado */
+  app.get('/api/canales/whatsapp-qr/:id/status', (req, res) => {
+    const state = whatsappEngine.getStatus(req.params.id);
+    // Persist phone number when connected
+    const s = (mockDb.waQRSessions || []).find(x => x.id === req.params.id);
+    if (s && state.status === 'conectado' && state.phoneNumber && s.phoneNumber !== state.phoneNumber) {
+      s.phoneNumber = state.phoneNumber;
+      saveMockDb(mockDb);
+    }
+    res.json({ mode: whatsappEngine.getMode(), state });
+  });
+
+  /** POST /api/canales/whatsapp-qr/:id/disconnect */
+  app.post('/api/canales/whatsapp-qr/:id/disconnect', async (req, res) => {
+    await whatsappEngine.disconnect(req.params.id);
+    res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
+  });
+
+  /** POST /api/canales/whatsapp-qr/:id/stub-connect — DEV ONLY */
+  if (!IS_PROD) {
+    app.post('/api/canales/whatsapp-qr/:id/stub-connect', (req, res) => {
+      const ok = whatsappEngine.stubMarkConnected(req.params.id);
+      if (!ok) return res.status(400).json({ error: 'Solo disponible en modo stub' });
+      res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  CANALES — Telegram Bots
+  // ═══════════════════════════════════════════════════════════════
+
+  /** GET /api/canales/telegram — list bots (token masked) */
+  app.get('/api/canales/telegram', (_req, res) => {
+    const bots = (mockDb.telegramBots || []).map(b => ({ ...b, token: maskToken(b.token) }));
+    res.json(bots);
+  });
+
+  /** POST /api/canales/telegram — add bot */
+  app.post('/api/canales/telegram', requireRole('gerente', 'administracion'), (req, res) => {
+    if (!mockDb.telegramBots) mockDb.telegramBots = [];
+    const { nombre, token } = req.body as { nombre: string; token: string };
+    if (!nombre || !token) return res.status(400).json({ error: 'nombre y token requeridos' });
+    const bot: TelegramBot = {
+      id: 'TG-' + Date.now(),
+      nombre, token,
+      activo: true,
+      status: 'sin_configurar',
+    };
+    mockDb.telegramBots.push(bot);
+    saveMockDb(mockDb);
+    res.json({ ...bot, token: maskToken(bot.token) });
+  });
+
+  /** PATCH /api/canales/telegram/:id */
+  app.patch('/api/canales/telegram/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const bot = (mockDb.telegramBots || []).find(x => x.id === req.params.id);
+    if (!bot) return res.status(404).json({ error: 'Bot no encontrado' });
+    if (req.body.nombre) bot.nombre = req.body.nombre;
+    if (req.body.token && !req.body.token.startsWith('***')) bot.token = req.body.token;
+    if (req.body.activo !== undefined) bot.activo = req.body.activo;
+    saveMockDb(mockDb);
+    res.json({ ...bot, token: maskToken(bot.token) });
+  });
+
+  /** DELETE /api/canales/telegram/:id */
+  app.delete('/api/canales/telegram/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const before = (mockDb.telegramBots || []).length;
+    mockDb.telegramBots = (mockDb.telegramBots || []).filter(x => x.id !== req.params.id);
+    if (mockDb.telegramBots.length === before) return res.status(404).json({ error: 'Bot no encontrado' });
+    saveMockDb(mockDb);
+    res.json({ ok: true });
+  });
+
+  /** POST /api/canales/telegram/:id/test — verify token via Telegram Bot API */
+  app.post('/api/canales/telegram/:id/test', requireRole('gerente', 'administracion'), async (req, res) => {
+    const bot = (mockDb.telegramBots || []).find(x => x.id === req.params.id);
+    if (!bot) return res.status(404).json({ error: 'Bot no encontrado' });
+    if (!bot.token) { bot.status = 'sin_configurar'; saveMockDb(mockDb); return res.json({ ok: false, error: 'Token no configurado' }); }
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${bot.token}/getMe`);
+      const data = await r.json() as any;
+      if (data.ok && data.result) {
+        bot.status      = 'activo';
+        bot.botUsername = data.result.username;
+        bot.botName     = data.result.first_name;
+        bot.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: true, botUsername: bot.botUsername, botName: bot.botName });
+      } else {
+        bot.status = 'error';
+        bot.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: false, error: data.description || 'Token inválido' });
+      }
+    } catch (e: any) {
+      bot.status = 'error';
+      saveMockDb(mockDb);
+      return res.json({ ok: false, error: e.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  FACEBOOK PAGES — CRUD + Test
+  // ═══════════════════════════════════════════════════════════════
+
+  /** GET /api/fb/accounts — list all (tokens masked) */
+  app.get('/api/fb/accounts', (_req, res) => {
+    const accounts = (mockDb.fbAccounts || []).map(a => ({
+      ...a,
+      accessToken: maskToken(a.accessToken),
+    }));
+    res.json(accounts);
+  });
+
+  /** POST /api/fb/accounts — create account */
+  app.post('/api/fb/accounts', requireRole('gerente', 'administracion'), (req, res) => {
+    if (!mockDb.fbAccounts) mockDb.fbAccounts = [];
+    const body = req.body as Partial<FBAccount>;
+    const newAccount: FBAccount = {
+      id: 'FB-' + Date.now(),
+      nombre:      body.nombre      || 'Nueva página FB',
+      pageId:      body.pageId      || '',
+      accessToken: body.accessToken || '',
+      tipo:        body.tipo        || 'marketing',
+      activo:      body.activo      !== false,
+      status:      (body.pageId && body.accessToken) ? 'activo' : 'sin_configurar',
+    };
+    mockDb.fbAccounts.push(newAccount);
+    saveMockDb(mockDb);
+    audit((req as any).sess?.uid || 'system', (req as any).sess?.email || '', 'FB_ACCOUNT_CREATE', 'fb_accounts', { nombre: newAccount.nombre, tipo: newAccount.tipo });
+    res.json({ ...newAccount, accessToken: maskToken(newAccount.accessToken) });
+  });
+
+  /** PATCH /api/fb/accounts/:id — update account */
+  app.patch('/api/fb/accounts/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const account = (mockDb.fbAccounts || []).find(x => x.id === req.params.id);
+    if (!account) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    const { nombre, pageId, accessToken, tipo, activo } = req.body;
+    if (nombre      !== undefined) account.nombre      = nombre;
+    if (pageId      !== undefined) account.pageId      = pageId;
+    if (accessToken !== undefined && !accessToken.startsWith('***')) account.accessToken = accessToken;
+    if (tipo        !== undefined) account.tipo        = tipo;
+    if (activo      !== undefined) account.activo      = activo;
+    account.status = (account.pageId && account.accessToken) ? (account.status === 'error' ? 'error' : 'activo') : 'sin_configurar';
+    saveMockDb(mockDb);
+    audit((req as any).sess?.uid || 'system', (req as any).sess?.email || '', 'FB_ACCOUNT_UPDATE', 'fb_accounts', { id: account.id, nombre: account.nombre });
+    res.json({ ...account, accessToken: maskToken(account.accessToken) });
+  });
+
+  /** DELETE /api/fb/accounts/:id */
+  app.delete('/api/fb/accounts/:id', requireRole('gerente', 'administracion'), (req, res) => {
+    const before = (mockDb.fbAccounts || []).length;
+    mockDb.fbAccounts = (mockDb.fbAccounts || []).filter(x => x.id !== req.params.id);
+    if (mockDb.fbAccounts.length === before) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    saveMockDb(mockDb);
+    audit((req as any).sess?.uid || 'system', (req as any).sess?.email || '', 'FB_ACCOUNT_DELETE', 'fb_accounts', { id: req.params.id });
+    res.json({ ok: true });
+  });
+
+  /** POST /api/fb/accounts/:id/test — verify Page Access Token via Graph API */
+  app.post('/api/fb/accounts/:id/test', requireRole('gerente', 'administracion'), async (req, res) => {
+    const account = (mockDb.fbAccounts || []).find(x => x.id === req.params.id);
+    if (!account) return res.status(404).json({ error: 'Cuenta no encontrada' });
+    if (!account.pageId || !account.accessToken) {
+      account.status = 'sin_configurar';
+      saveMockDb(mockDb);
+      return res.json({ ok: false, error: 'Page ID o Access Token no configurados' });
+    }
+    try {
+      const r = await fetch(`https://graph.facebook.com/v18.0/${account.pageId}?fields=id,name,category`, {
+        headers: { Authorization: `Bearer ${account.accessToken}` },
+      });
+      const data = await r.json() as any;
+      if (r.ok && data.id) {
+        account.status    = 'activo';
+        account.pageName  = data.name || '';
+        account.category  = data.category || '';
+        account.lastChecked = new Date().toISOString();
+        saveMockDb(mockDb);
+        return res.json({ ok: true, pageName: account.pageName, category: account.category });
       } else {
         account.status = 'error';
         account.lastChecked = new Date().toISOString();
@@ -2017,11 +2956,13 @@ RESPONDE ÚNICAMENTE CON EL JSON. Sin explicaciones, sin markdown.`;
   });
 
   // POST /api/agents/:id/whatsapp/stub-connect — DEV ONLY: simulate scan
-  app.post("/api/agents/:id/whatsapp/stub-connect", (req, res) => {
-    const ok = whatsappEngine.stubMarkConnected(req.params.id);
-    if (!ok) return res.status(400).json({ error: 'Solo disponible en modo stub' });
-    res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
-  });
+  if (!IS_PROD) {
+    app.post("/api/agents/:id/whatsapp/stub-connect", (req, res) => {
+      const ok = whatsappEngine.stubMarkConnected(req.params.id);
+      if (!ok) return res.status(400).json({ error: 'Solo disponible en modo stub' });
+      res.json({ ok: true, state: whatsappEngine.getStatus(req.params.id) });
+    });
+  }
 
   // POST /api/agents/:id/whatsapp/disconnect
   app.post("/api/agents/:id/whatsapp/disconnect", async (req, res) => {
@@ -2646,8 +3587,8 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     }
   });
 
-  /** Eliminar huella de un usuario */
-  app.delete("/api/webauthn/credential", (req, res) => {
+  /** Eliminar huella de un usuario — solo el propio usuario o un gerente */
+  app.delete("/api/webauthn/credential", requireRole('gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'), (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Falta email" });
     const before = getWaCreds().length;
@@ -2659,7 +3600,7 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
   // SEGUIMIENTO A CLIENTES — Clientes
   // ═══════════════════════════════════════════════
 
-  app.get("/api/seguimiento/clientes", (req, res) => {
+  app.get("/api/seguimiento/clientes", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     let list = mockDb.clientesSeguimiento || [];
     const { supervisor_id, agente_id, estado_pago, q } = req.query as any;
 
@@ -2672,7 +3613,7 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     res.json(list);
   });
 
-  app.post("/api/seguimiento/clientes", (req, res) => {
+  app.post("/api/seguimiento/clientes", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     const c = req.body as ClienteSeguimiento;
     c.id = "CLI-" + Date.now();
     c.mensajes_sin_leer = 0;
@@ -2682,15 +3623,37 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
     res.json(c);
   });
 
-  app.patch("/api/seguimiento/clientes/:id", (req, res) => {
+  app.patch("/api/seguimiento/clientes/:id", requireRole('gerente', 'administracion', 'supervisor', 'seguimiento'), (req, res) => {
     const c = (mockDb.clientesSeguimiento || []).find(x => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: "Cliente no encontrado" });
-    Object.assign(c, req.body);
+    // Allowlist: id, folio, agente_id, agente_nombre, supervisor_id, fecha_alta son inmutables
+    const {
+      nombre, telefono, email, paquete, renta, megas,
+      estado_pago, fecha_ultimo_pago,
+      beneficio_activado, domiciliado,
+      colonia, municipio, notas,
+      mensajes_sin_leer, ultimo_contacto,
+    } = req.body;
+    if (nombre           !== undefined) c.nombre            = nombre;
+    if (telefono         !== undefined) c.telefono          = telefono;
+    if (email            !== undefined) c.email             = email;
+    if (paquete          !== undefined) c.paquete           = paquete;
+    if (renta            !== undefined) c.renta             = renta;
+    if (megas            !== undefined) c.megas             = megas;
+    if (estado_pago      !== undefined) c.estado_pago       = estado_pago;
+    if (fecha_ultimo_pago !== undefined) c.fecha_ultimo_pago = fecha_ultimo_pago;
+    if (beneficio_activado !== undefined) c.beneficio_activado = beneficio_activado;
+    if (domiciliado      !== undefined) c.domiciliado       = domiciliado;
+    if (colonia          !== undefined) c.colonia           = colonia;
+    if (municipio        !== undefined) c.municipio         = municipio;
+    if (notas            !== undefined) c.notas             = notas;
+    if (mensajes_sin_leer !== undefined) c.mensajes_sin_leer = mensajes_sin_leer;
+    if (ultimo_contacto  !== undefined) c.ultimo_contacto   = ultimo_contacto;
     saveMockDb(mockDb);
     res.json(c);
   });
 
-  app.delete("/api/seguimiento/clientes/:id", (req, res) => {
+  app.delete("/api/seguimiento/clientes/:id", requireRole('gerente', 'administracion'), (req, res) => {
     mockDb.clientesSeguimiento = (mockDb.clientesSeguimiento || []).filter(x => x.id !== req.params.id);
     saveMockDb(mockDb);
     res.json({ ok: true });
@@ -2774,10 +3737,19 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
 
       // Validar firma (X-Hub-Signature-256)
       const appSecret = process.env.WA_APP_SECRET;
+      if (IS_PROD && !appSecret) {
+        console.error("[SEGURIDAD] WA_APP_SECRET no configurado en producción — rechazando webhook");
+        return; // en prod, sin secret = rechazar siempre
+      }
       if (appSecret) {
         const sig = req.headers["x-hub-signature-256"] as string;
         const expected = "sha256=" + crypto.createHmac("sha256", appSecret).update(JSON.stringify(body)).digest("hex");
-        if (sig !== expected) return;
+        // Usar timingSafeEqual para evitar timing attacks
+        try {
+          const sigBuf = Buffer.from(sig || "");
+          const expBuf = Buffer.from(expected);
+          if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return;
+        } catch { return; }
       }
 
       const entry   = body?.entry?.[0];
@@ -2833,8 +3805,14 @@ Responde SOLO con JSON exacto (sin markdown, sin bloques de código):
   app.patch("/api/seguimiento/tickets/:id", (req, res) => {
     const t = (mockDb.ticketsSoporte || []).find(x => x.id === req.params.id);
     if (!t) return res.status(404).json({ error: "Ticket no encontrado" });
-    Object.assign(t, req.body);
-    if (req.body.estado === "resuelto" || req.body.estado === "cerrado") {
+    // Allowlist: id, cliente_id, fecha_apertura son inmutables; fecha_cierre es auto-set
+    const { estado, prioridad, asunto, descripcion, agente_id } = req.body;
+    if (estado      !== undefined) t.estado      = estado;
+    if (prioridad   !== undefined) t.prioridad   = prioridad;
+    if (asunto      !== undefined) t.asunto      = asunto;
+    if (descripcion !== undefined) t.descripcion = descripcion;
+    if (agente_id   !== undefined) t.agente_id   = agente_id;
+    if (estado === "resuelto" || estado === "cerrado") {
       t.fecha_cierre = new Date().toISOString();
     }
     saveMockDb(mockDb);
@@ -3013,7 +3991,7 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // SEGUIMIENTO — Export CSV
   // ═══════════════════════════════════════════════
 
-  app.get("/api/seguimiento/export/clientes", (_req, res) => {
+  app.get("/api/seguimiento/export/clientes", requireRole('gerente', 'administracion'), (_req, res) => {
     const cs = mockDb.clientesSeguimiento || [];
     const headers = ["id","nombre","telefono","email","folio","paquete","renta","estado_pago","fecha_alta","fecha_ultimo_pago","agente_nombre","beneficio_activado","domiciliado","colonia","municipio"];
     const rows = cs.map(c => headers.map(h => `"${String((c as any)[h] ?? "").replace(/"/g,'""')}"`).join(","));
@@ -3044,6 +4022,22 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     const status = dbOk || !isDbConnected ? "ok" : "degraded";
     res.status(dbOk || !isDbConnected ? 200 : 503).json({
       status,
+      env: process.env.NODE_ENV || "development",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      ts: new Date().toISOString(),
+    });
+  });
+
+  // Backwards compatibility — Railway usa /health por default según railway.json.
+  app.get("/health", async (_req, res) => {
+    let dbOk = !isDbConnected;
+    if (isDbConnected) {
+      try { await pool.query("SELECT 1"); dbOk = true; } catch { dbOk = false; }
+    }
+    res.status(dbOk ? 200 : 503).json({
+      status: dbOk ? "ok" : "degraded",
+      env: process.env.NODE_ENV || "development",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
       env: process.env.NODE_ENV || "development",
       db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
       ts: new Date().toISOString(),
@@ -3102,7 +4096,9 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // Restringir CORS al origen real de la app en producción
+    const allowedOrigin = process.env.APP_ORIGIN || (IS_PROD ? '' : '*');
+    if (allowedOrigin) res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.flushHeaders();
 
     const rol = (req.query.rol as string) || undefined;
@@ -3198,7 +4194,26 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   app.patch('/api/contracts/:id', (req, res) => {
     const c = (mockDb.contracts || []).find((x: Contract) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: 'Contrato no encontrado' });
-    Object.assign(c, req.body, { updatedAt: new Date().toISOString() });
+    // Allowlist: id, folio, cliente_nombre, cliente_telefono, fecha_inicio, createdAt son inmutables
+    const {
+      paquete, renta, megas, fecha_fin, meses_permanencia,
+      estado, portabilidad, domicilio, municipio, notas,
+      agente_id, agente_nombre, cliente_email,
+    } = req.body;
+    if (paquete           !== undefined) c.paquete           = paquete;
+    if (renta             !== undefined) c.renta             = renta;
+    if (megas             !== undefined) c.megas             = megas;
+    if (fecha_fin         !== undefined) c.fecha_fin         = fecha_fin;
+    if (meses_permanencia !== undefined) c.meses_permanencia = meses_permanencia;
+    if (estado            !== undefined) c.estado            = estado;
+    if (portabilidad      !== undefined) c.portabilidad      = portabilidad;
+    if (domicilio         !== undefined) c.domicilio         = domicilio;
+    if (municipio         !== undefined) c.municipio         = municipio;
+    if (notas             !== undefined) c.notas             = notas;
+    if (agente_id         !== undefined) c.agente_id         = agente_id;
+    if (agente_nombre     !== undefined) c.agente_nombre     = agente_nombre;
+    if (cliente_email     !== undefined) c.cliente_email     = cliente_email;
+    c.updatedAt = new Date().toISOString();
     saveMockDb(mockDb);
     res.json(c);
   });
@@ -3291,7 +4306,12 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
       req.body.fecha_pago = new Date().toISOString().split('T')[0];
       pushNotif('Pago registrado', `${inv.cliente_nombre} — $${inv.total}`, 'success', 'facturacion', { referencia_id: inv.id });
     }
-    Object.assign(inv, req.body);
+    // Allowlist: montos, cliente, fechas de emisión/vencimiento y agente_id son inmutables
+    const { estado, fecha_pago, notas, metodo_pago } = req.body;
+    if (estado      !== undefined) inv.estado      = estado;
+    if (fecha_pago  !== undefined) inv.fecha_pago  = fecha_pago;
+    if (notas       !== undefined) inv.notas       = notas;
+    if (metodo_pago !== undefined) inv.metodo_pago = metodo_pago;
     saveMockDb(mockDb); res.json(inv);
   });
 
@@ -3375,8 +4395,25 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   app.patch('/api/inventory/:id', (req, res) => {
     const item = (mockDb.inventory || []).find((x: InventoryItem) => x.id === req.params.id);
     if (!item) return res.status(404).json({ error: 'Item no encontrado' });
-    if (req.body.estado === 'asignado' && !item.fecha_asignacion) req.body.fecha_asignacion = new Date().toISOString().split('T')[0];
-    Object.assign(item, req.body);
+    // Allowlist: id, tipo, fecha_ingreso son inmutables
+    const {
+      descripcion, serie, numero, estado,
+      cliente_nombre, contrato_id, asignado_a,
+      talla, almacen, precio_costo, notas,
+    } = req.body;
+    if (descripcion   !== undefined) item.descripcion   = descripcion;
+    if (serie         !== undefined) item.serie         = serie;
+    if (numero        !== undefined) item.numero        = numero;
+    if (estado        !== undefined) item.estado        = estado;
+    if (cliente_nombre !== undefined) item.cliente_nombre = cliente_nombre;
+    if (contrato_id   !== undefined) item.contrato_id   = contrato_id;
+    if (asignado_a    !== undefined) item.asignado_a    = asignado_a;
+    if (talla         !== undefined) item.talla         = talla;
+    if (almacen       !== undefined) item.almacen       = almacen;
+    if (precio_costo  !== undefined) item.precio_costo  = precio_costo;
+    if (notas         !== undefined) item.notas         = notas;
+    if (estado === 'asignado' && !item.fecha_asignacion)
+      item.fecha_asignacion = new Date().toISOString().split('T')[0];
     saveMockDb(mockDb); res.json(item);
   });
 
@@ -3451,7 +4488,7 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
   // ═══════════════════════════════════════════════════════════════════════════
   //  BÚSQUEDA GLOBAL
   // ═══════════════════════════════════════════════════════════════════════════
-  app.get('/api/search', (req, res) => {
+  app.get('/api/search', requireRole('gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'), (req, res) => {
     const { q } = req.query as any;
     if (!q || q.length < 2) return res.json([]);
     const ql = q.toLowerCase();
@@ -3623,9 +4660,13 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     const adv = ((mockDb as any).advances || []).find((a: any) => a.id === req.params.id);
     if (!adv) return res.status(404).json({ error: 'No encontrado' });
     const prevEstado = adv.estado;
-    Object.assign(adv, req.body);
+    // Allowlist: id, agente_id, agente_nombre, monto, createdAt son inmutables
+    const { estado, fecha_pago, notas } = req.body;
+    if (estado     !== undefined) adv.estado     = estado;
+    if (fecha_pago !== undefined) adv.fecha_pago = fecha_pago;
+    if (notas      !== undefined) adv.notas      = notas;
     saveMockDb(mockDb);
-    if (req.body.estado === 'aprobado') pushNotif('Adelanto aprobado', `$${adv.monto} para ${adv.agente_nombre}`, 'success', 'nomina');
+    if (estado === 'aprobado') pushNotif('Adelanto aprobado', `$${adv.monto} para ${adv.agente_nombre}`, 'success', 'nomina');
 
     // Audit: gerente/admin autorizo o rechazo el pago.
     if (req.body.estado && req.body.estado !== prevEstado) {

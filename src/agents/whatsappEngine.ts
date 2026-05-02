@@ -50,7 +50,9 @@ class WhatsAppEngine {
     this.initialized = true;
     try {
       // @ts-ignore — optional dep, may not be installed
-      const lib = await import('whatsapp-web.js').catch(() => null);
+      const rawLib = await import('whatsapp-web.js').catch(() => null);
+      // whatsapp-web.js es CJS: con dynamic import puede venir en .default o directo
+      const lib = rawLib && ((rawLib as any).default?.Client ? (rawLib as any).default : rawLib);
       if (lib && (lib as any).Client) {
         this.wwebLib = lib;
         this.mode = 'real';

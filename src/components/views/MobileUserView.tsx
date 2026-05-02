@@ -15,6 +15,7 @@ const CaptureValidation    = lazy(() => import('./CaptureValidation'));
 const ConsultasSeguimiento = lazy(() => import('./ConsultasSeguimiento'));
 const Payroll              = lazy(() => import('./Payroll'));
 const Announcements        = lazy(() => import('./Announcements'));
+const SettingsView         = lazy(() => import('./Settings'));
 
 const SectionLoader = () => (
   <div className="flex items-center justify-center h-48">
@@ -37,36 +38,43 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
 
   if (role === 'GERENTE') {
     availableSections = [
-      { id: 'Dashboard', label: 'Dashboard', icon: Activity },
-      { id: 'Perfil', label: 'Perfil', icon: User },
-      { id: 'Captura y Validación', label: 'Captura', icon: ClipboardCheck },
-      { id: 'Consulta y Seguimiento', label: 'Consultas', icon: FileSearch },
-      { id: 'Nóminas', label: 'Nóminas', icon: Wallet },
-      { id: 'Reclutamiento', label: 'Reclutamiento', icon: Users },
-      { id: 'Anuncios', label: 'Anuncios', icon: Megaphone },
-      { id: 'Ajustes', label: 'Ajustes', icon: SettingsIcon },
+      { id: 'Dashboard',             label: 'Dashboard',    icon: Activity },
+      { id: 'Perfil',                label: 'Perfil',       icon: User },
+      { id: 'Captura y Validación',  label: 'Captura',      icon: ClipboardCheck },
+      { id: 'Consulta y Seguimiento',label: 'Consultas',    icon: FileSearch },
+      { id: 'Nóminas',               label: 'Nóminas',      icon: Wallet },
+      { id: 'Reclutamiento',         label: 'Reclutamiento',icon: Users },
+      { id: 'Anuncios',              label: 'Anuncios',     icon: Megaphone },
+      { id: 'Ajustes',               label: 'Ajustes',      icon: SettingsIcon },
     ];
   } else if (role === 'ADMINISTRACION') {
     availableSections = [
-      { id: 'Dashboard', label: 'Dashboard', icon: Activity },
-      { id: 'Perfil', label: 'Perfil', icon: User },
-      { id: 'Captura y Validación', label: 'Captura', icon: ClipboardCheck },
-      { id: 'Consulta y Seguimiento', label: 'Consultas', icon: FileSearch },
-      { id: 'Nóminas', label: 'Nóminas', icon: Wallet },
-      { id: 'Reclutamiento', label: 'Reclutamiento', icon: Users },
-      { id: 'Anuncios', label: 'Anuncios', icon: Megaphone },
+      { id: 'Dashboard',             label: 'Dashboard',    icon: Activity },
+      { id: 'Perfil',                label: 'Perfil',       icon: User },
+      { id: 'Captura y Validación',  label: 'Captura',      icon: ClipboardCheck },
+      { id: 'Consulta y Seguimiento',label: 'Consultas',    icon: FileSearch },
+      { id: 'Nóminas',               label: 'Nóminas',      icon: Wallet },
+      { id: 'Reclutamiento',         label: 'Reclutamiento',icon: Users },
+      { id: 'Anuncios',              label: 'Anuncios',     icon: Megaphone },
+      { id: 'Ajustes',               label: 'Ajustes',      icon: SettingsIcon },
     ];
   } else if (role === 'RECLUTADORA') {
     availableSections = [
-      { id: 'Perfil', label: 'Perfil', icon: User },
-      { id: 'Reclutamiento', label: 'Reclutamiento', icon: Users },
+      { id: 'Perfil',                label: 'Perfil',       icon: User },
+      { id: 'Reclutamiento',         label: 'Reclutamiento',icon: Users },
+    ];
+  } else if (role === 'SUPERVISOR') {
+    availableSections = [
+      { id: 'Perfil',                label: 'Perfil',       icon: User },
+      { id: 'Captura y Validación',  label: 'Captura',      icon: ClipboardCheck },
+      { id: 'Consulta y Seguimiento',label: 'Consultas',    icon: FileSearch },
     ];
   } else {
-    // SUPERVISOR y VENDEDOR
+    // VENDEDOR
     availableSections = [
-      { id: 'Perfil', label: 'Perfil', icon: User },
-      { id: 'Captura y Validación', label: 'Captura', icon: ClipboardCheck },
-      { id: 'Consulta y Seguimiento', label: 'Consultas', icon: FileSearch },
+      { id: 'Perfil',                label: 'Perfil',       icon: User },
+      { id: 'Captura y Validación',  label: 'Captura',      icon: ClipboardCheck },
+      { id: 'Consulta y Seguimiento',label: 'Consultas',    icon: FileSearch },
     ];
   }
 
@@ -80,10 +88,10 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
   };
 
   return (
-    <div className="flex flex-col h-screen w-full max-w-[420px] mx-auto bg-[#020617]/90 backdrop-blur-2xl border-x border-white/10 relative z-10 shadow-2xl overflow-hidden">
+    <div className="flex flex-col h-screen w-full bg-[#020617]/90 backdrop-blur-2xl relative z-10 overflow-hidden">
       
-      {/* Mobile Header */}
-      <header className="px-6 pt-12 pb-4 flex justify-between items-center bg-gradient-to-b from-[#020617] to-transparent shrink-0">
+      {/* Header */}
+      <header className="px-4 sm:px-6 pt-safe-top pt-8 sm:pt-12 pb-4 flex justify-between items-center bg-gradient-to-b from-[#020617] to-transparent shrink-0">
         <div className="flex items-center gap-3">
           <button 
             onClick={onBack} 
@@ -91,9 +99,12 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <div>
-            <h1 className="text-lg font-bold text-white tracking-tight leading-tight">HDreamsApp</h1>
-            <p className="text-[10px] text-blue-400 font-medium uppercase tracking-wider">{role}</p>
+          <div className="flex items-center gap-2">
+            <Logo className="text-[36px]" />
+            <div>
+              <h1 className="text-sm font-black text-white tracking-tight leading-none">Heavenly Dreams</h1>
+              <p className="text-[9px] text-blue-400 font-bold uppercase tracking-wider mt-0.5">{role}</p>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -113,6 +124,7 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
         {activeSection === 'Consulta y Seguimiento' && <Suspense fallback={<SectionLoader />}><ConsultasSeguimiento /></Suspense>}
         {activeSection === 'Nóminas' && <Suspense fallback={<SectionLoader />}><Payroll /></Suspense>}
         {activeSection === 'Anuncios' && <Suspense fallback={<SectionLoader />}><Announcements /></Suspense>}
+        {activeSection === 'Ajustes' && <Suspense fallback={<SectionLoader />}><SettingsView /></Suspense>}
       </div>
 
       {/* Full Screen Menu Overlay */}
@@ -143,22 +155,23 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
       )}
 
       {/* Bottom Navigation */}
-      <nav className="absolute bottom-0 w-full h-20 bg-[#020617]/90 backdrop-blur-xl border-t border-white/10 flex justify-around items-center px-2 pb-4 pt-2 shrink-0 z-30">
+      <nav className="absolute bottom-0 w-full bg-[#020617]/90 backdrop-blur-xl border-t border-white/10 flex justify-around items-center shrink-0 z-30"
+           style={{ paddingBottom: 'env(safe-area-inset-bottom, 8px)', paddingTop: '8px', minHeight: '64px' }}>
         {bottomNavItems.map(item => (
-          <NavItem 
-            key={item.id} 
-            icon={item.icon} 
-            label={item.label} 
-            active={activeSection === item.id && !showMenu} 
-            onClick={() => handleNavClick(item.id)} 
+          <NavItem
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            active={activeSection === item.id && !showMenu}
+            onClick={() => handleNavClick(item.id)}
           />
         ))}
         {hasMore && (
-          <NavItem 
-            icon={Menu} 
-            label="Menú" 
-            active={showMenu} 
-            onClick={() => setShowMenu(true)} 
+          <NavItem
+            icon={Menu}
+            label="Menú"
+            active={showMenu}
+            onClick={() => setShowMenu(true)}
           />
         )}
       </nav>

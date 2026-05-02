@@ -111,8 +111,9 @@ export default function AuditLog() {
       });
       if (!r.ok) { setEntries([]); return; }
       const data: AuditEntry[] = await r.json();
-      setEntries(data);
-      setTotal(data.length);
+      const safe = Array.isArray(data) ? data : [];
+      setEntries(safe);
+      setTotal(safe.length);
     } catch { setEntries([]); }
     finally { setLoading(false); }
   }, [modulo, user?.sessionToken]);

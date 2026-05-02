@@ -8,6 +8,7 @@ import {
   XCircle, Loader2, CloudUpload, Send, Database, Layers,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { api } from '../../api';
 
 /* ─────────────────────────────────────────────
    TIPOS
@@ -33,20 +34,22 @@ interface Expense {
   notas?: string;
 }
 
-const ROLES = ['admin', 'supervisor', 'vendedor', 'reclutador', 'cobranza'];
+const ROLES = ['gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'];
 const ROLE_LABELS: Record<string, string> = {
-  admin: 'Administrador',
-  supervisor: 'Supervisor',
-  vendedor: 'Vendedor',
-  reclutador: 'Reclutador',
-  cobranza: 'Cobranza',
+  gerente:        'Gerente',
+  administracion: 'Administración',
+  supervisor:     'Supervisor',
+  vendedor:       'Vendedor',
+  reclutadora:    'Reclutadora',
+  seguimiento:    'Seguimiento',
 };
 const ROLE_COLORS: Record<string, string> = {
-  admin: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
-  supervisor: 'bg-blue-500/15 text-blue-300 border-blue-500/30',
-  vendedor: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-  reclutador: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  cobranza: 'bg-red-500/15 text-red-300 border-red-500/30',
+  gerente:        'bg-purple-500/15 text-purple-300 border-purple-500/30',
+  administracion: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
+  supervisor:     'bg-blue-500/15 text-blue-300 border-blue-500/30',
+  vendedor:       'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+  reclutadora:    'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  seguimiento:    'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
 };
 const EXPENSE_CATS = ['Operativo', 'Marketing', 'Logística', 'RRHH', 'Tecnología', 'Otros'];
 
@@ -109,71 +112,88 @@ export default function Settings() {
 }
 
 /* ═══════════════════════════════════════════
-   TAB — GESTIÓN DE USUARIOS
+   TAB — GESTIÓN DE USUARIOS + INVITACIONES
 ═══════════════════════════════════════════ */
+interface Invitation { id?: number; token: string; email: string; role: string; nombres?: string; expiresAt?: string; expires_at?: string; used?: boolean; created_at?: string; }
+
 function UsuariosTab() {
   const [users, setUsers]           = useState<AdminUser[]>([]);
+  const [invites, setInvites]       = useState<Invitation[]>([]);
   const [loading, setLoading]       = useState(true);
   const [search, setSearch]         = useState('');
   const [roleFilter, setRoleFilter] = useState('');
-  const [showModal, setShowModal]   = useState(false);
-  const [editing, setEditing]       = useState<AdminUser | null>(null);
+  const [showInvite, setShowInvite] = useState(false);
+  const [showEdit, setShowEdit]     = useState<AdminUser | null>(null);
   const [resetUid, setResetUid]     = useState<string | null>(null);
   const [newPwd, setNewPwd]         = useState('');
   const [showPwd, setShowPwd]       = useState(false);
   const [toast, setToast]           = useState('');
+  const [copiedToken, setCopiedToken] = useState('');
+  const [subTab, setSubTab]         = useState<'usuarios' | 'invitaciones'>('usuarios');
 
   const notify = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
 
-  const load = async () => {
+  const loadUsers = async () => {
     setLoading(true);
-    try {
-      const r = await fetch('/api/admin/users');
-      setUsers(await r.json());
-    } catch { notify('Error cargando usuarios'); }
+    try { const d = await api.get('/admin/users'); setUsers(Array.isArray(d) ? d : []); } catch { notify('Error cargando usuarios'); }
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  const loadInvites = async () => {
+    try { const d = await api.get('/invitations'); setInvites(Array.isArray(d) ? d : []); } catch { /* ignore */ }
+  };
+
+  useEffect(() => { loadUsers(); loadInvites(); }, []);
 
   const filtered = users.filter(u =>
-    (!search || u.nombres.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase())) &&
+    (!search || u.nombres?.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase())) &&
     (!roleFilter || u.role === roleFilter)
   );
 
   const toggleStatus = async (u: AdminUser) => {
     const newStatus = u.status === 'active' ? 'inactive' : 'active';
-    await fetch(`/api/admin/users/${u.uid}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus })
-    });
+    await api.patch(`/admin/users/${u.uid}`, { status: newStatus });
     setUsers(prev => prev.map(x => x.uid === u.uid ? { ...x, status: newStatus } : x));
     notify(`Usuario ${newStatus === 'active' ? 'activado' : 'desactivado'}`);
   };
 
   const deleteUser = async (uid: string) => {
-    if (!confirm('¿Eliminar este usuario?')) return;
-    await fetch(`/api/admin/users/${uid}`, { method: 'DELETE' });
+    if (!confirm('¿Eliminar este usuario permanentemente?')) return;
+    await api.del(`/admin/users/${uid}`);
     setUsers(prev => prev.filter(x => x.uid !== uid));
     notify('Usuario eliminado');
   };
 
+  const revokeInvite = async (token: string) => {
+    if (!confirm('¿Revocar esta invitación?')) return;
+    await api.del(`/invitations/${token}`);
+    setInvites(prev => prev.filter(x => x.token !== token));
+    notify('Invitación revocada');
+  };
+
   const handleResetPwd = async () => {
     if (!resetUid || !newPwd) return;
-    await fetch(`/api/admin/users/${resetUid}/reset-password`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: newPwd })
-    });
+    if (newPwd.length < 8 || !/[A-Z]/.test(newPwd) || !/[0-9]/.test(newPwd)) {
+      notify('Mín. 8 caracteres, 1 mayúscula y 1 número');
+      return;
+    }
+    await api.post(`/admin/users/${resetUid}/reset-password`, { newPassword: newPwd });
     setResetUid(null); setNewPwd('');
     notify('Contraseña restablecida');
   };
 
+  const copyToken = (token: string) => {
+    navigator.clipboard.writeText(token);
+    setCopiedToken(token);
+    setTimeout(() => setCopiedToken(''), 2000);
+  };
+
   const active   = users.filter(u => u.status === 'active').length;
   const inactive = users.filter(u => u.status === 'inactive').length;
+  const pendingInvites = invites.filter(i => !i.used).length;
 
   return (
     <div className="space-y-5">
-      {/* Toast */}
       {toast && (
         <div className="fixed top-6 right-6 z-50 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-2xl text-sm font-medium flex items-center gap-2 animate-fade-in">
           <Check className="w-4 h-4" />{toast}
@@ -181,12 +201,13 @@ function UsuariosTab() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         {[
-          { label: 'Total', val: users.length, color: 'text-zinc-100' },
-          { label: 'Activos', val: active, color: 'text-emerald-400' },
-          { label: 'Inactivos', val: inactive, color: 'text-red-400' },
-          { label: 'Roles', val: new Set(users.map(u => u.role)).size, color: 'text-indigo-400' },
+          { label: 'Total',        val: users.length,   color: 'text-zinc-100' },
+          { label: 'Activos',      val: active,         color: 'text-emerald-400' },
+          { label: 'Inactivos',    val: inactive,       color: 'text-red-400' },
+          { label: 'Roles',        val: new Set(users.map(u => u.role)).size, color: 'text-indigo-400' },
+          { label: 'Invitaciones', val: pendingInvites, color: 'text-amber-400' },
         ].map(s => (
           <div key={s.label} className="bg-zinc-950/50 border border-white/5 rounded-xl px-4 py-3">
             <p className="text-[10px] uppercase tracking-wider font-medium text-zinc-500 mb-1">{s.label}</p>
@@ -195,108 +216,160 @@ function UsuariosTab() {
         ))}
       </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap gap-3 items-center">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-          <input
-            value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar por nombre o email..."
-            className="w-full pl-9 pr-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-          />
-        </div>
-        <select
-          value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
-          className="px-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-300 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-        >
-          <option value="">Todos los roles</option>
-          {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-        </select>
-        <button onClick={load} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
-          <RefreshCw className="w-4 h-4" />
+      {/* Sub-tabs: Usuarios / Invitaciones */}
+      <div className="flex gap-2">
+        <button onClick={() => setSubTab('usuarios')} className={cn("px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all", subTab === 'usuarios' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white hover:bg-white/5')}>
+          <Users className="w-3.5 h-3.5 inline mr-1.5" />Usuarios
         </button>
-        <button
-          onClick={() => { setEditing(null); setShowModal(true); }}
-          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-indigo-500/20"
-        >
-          <Plus className="w-4 h-4" /> Nuevo Usuario
+        <button onClick={() => setSubTab('invitaciones')} className={cn("px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all", subTab === 'invitaciones' ? 'bg-amber-600 text-white' : 'text-zinc-400 hover:text-white hover:bg-white/5')}>
+          <Send className="w-3.5 h-3.5 inline mr-1.5" />Invitaciones {pendingInvites > 0 && <span className="ml-1 bg-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded-full text-[9px]">{pendingInvites}</span>}
         </button>
       </div>
 
-      {/* Tabla */}
-      {loading ? (
-        <div className="text-center py-16 text-zinc-500">Cargando usuarios...</div>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-white/5">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-zinc-950/60">
-              <tr>
-                {['Nombre', 'Email', 'Rol', 'Estado', 'Alta', 'Acciones'].map(h => (
-                  <th key={h} className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {filtered.length === 0 && (
-                <tr><td colSpan={6} className="py-12 text-center text-zinc-600 text-sm">Sin resultados</td></tr>
-              )}
-              {filtered.map(u => (
-                <tr key={u.uid} className="hover:bg-zinc-800/30 transition-colors">
-                  <td className="px-4 py-3.5 font-medium text-zinc-100">{u.nombres}</td>
-                  <td className="px-4 py-3.5 text-zinc-400 text-xs font-mono">{u.email}</td>
-                  <td className="px-4 py-3.5">
-                    <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border", ROLE_COLORS[u.role] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30')}>
-                      {ROLE_LABELS[u.role] || u.role}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border",
-                      u.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
-                    )}>
-                      {u.status === 'active' ? 'Activo' : 'Inactivo'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5 text-zinc-500 text-xs font-mono">
-                    {u.createdAt ? new Date(u.createdAt).toLocaleDateString('es-MX') : '—'}
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex gap-1">
-                      <button
-                        title="Editar" onClick={() => { setEditing(u); setShowModal(true); }}
-                        className="p-1.5 text-zinc-400 hover:text-indigo-400 rounded-lg hover:bg-indigo-500/10 transition-colors"
-                      ><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button
-                        title="Restablecer contraseña" onClick={() => setResetUid(u.uid)}
-                        className="p-1.5 text-zinc-400 hover:text-amber-400 rounded-lg hover:bg-amber-500/10 transition-colors"
-                      ><Key className="w-3.5 h-3.5" /></button>
-                      <button
-                        title={u.status === 'active' ? 'Desactivar' : 'Activar'} onClick={() => toggleStatus(u)}
-                        className="p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors"
-                      ><Power className="w-3.5 h-3.5" /></button>
-                      <button
-                        title="Eliminar" onClick={() => deleteUser(u.uid)}
-                        className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"
-                      ><Trash2 className="w-3.5 h-3.5" /></button>
+      {subTab === 'usuarios' && (
+        <>
+          {/* Toolbar */}
+          <div className="flex flex-wrap gap-3 items-center">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por nombre o email..."
+                className="w-full pl-9 pr-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-indigo-500/50" />
+            </div>
+            <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
+              className="px-4 py-2.5 bg-zinc-950/50 border border-white/5 rounded-xl text-sm text-zinc-300 focus:outline-none focus:ring-1 focus:ring-indigo-500/50">
+              <option value="">Todos los roles</option>
+              {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+            </select>
+            <button onClick={loadUsers} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors" title="Recargar">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+            <button onClick={() => setShowInvite(true)}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-indigo-500/20">
+              <Plus className="w-4 h-4" /> Invitar Usuario
+            </button>
+          </div>
+
+          {/* Tabla de usuarios */}
+          {loading ? (
+            <div className="text-center py-16 text-zinc-500"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />Cargando usuarios...</div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-white/5">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-zinc-950/60">
+                  <tr>
+                    {['Nombre', 'Email', 'Rol', 'Estado', 'Alta', 'Acciones'].map(h => (
+                      <th key={h} className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {filtered.length === 0 && (
+                    <tr><td colSpan={6} className="py-12 text-center text-zinc-600 text-sm">Sin resultados</td></tr>
+                  )}
+                  {filtered.map(u => (
+                    <tr key={u.uid} className="hover:bg-zinc-800/30 transition-colors">
+                      <td className="px-4 py-3.5 font-medium text-zinc-100">{u.nombres}</td>
+                      <td className="px-4 py-3.5 text-zinc-400 text-xs font-mono">{u.email}</td>
+                      <td className="px-4 py-3.5">
+                        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border", ROLE_COLORS[u.role] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30')}>
+                          {ROLE_LABELS[u.role] || u.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border",
+                          u.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20'
+                        )}>
+                          {u.status === 'active' ? 'Activo' : 'Inactivo'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-zinc-500 text-xs font-mono">
+                        {u.createdAt ? new Date(u.createdAt).toLocaleDateString('es-MX') : '—'}
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <div className="flex gap-1">
+                          <button title="Editar" onClick={() => setShowEdit(u)} className="p-1.5 text-zinc-400 hover:text-indigo-400 rounded-lg hover:bg-indigo-500/10 transition-colors"><Edit2 className="w-3.5 h-3.5" /></button>
+                          <button title="Restablecer contraseña" onClick={() => setResetUid(u.uid)} className="p-1.5 text-zinc-400 hover:text-amber-400 rounded-lg hover:bg-amber-500/10 transition-colors"><Key className="w-3.5 h-3.5" /></button>
+                          <button title={u.status === 'active' ? 'Desactivar' : 'Activar'} onClick={() => toggleStatus(u)} className="p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors"><Power className="w-3.5 h-3.5" /></button>
+                          <button title="Eliminar" onClick={() => deleteUser(u.uid)} className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {subTab === 'invitaciones' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-zinc-400">Invitaciones generadas por el equipo directivo. Cada token expira en 48 horas.</p>
+            <button onClick={() => setShowInvite(true)}
+              className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all">
+              <Plus className="w-4 h-4" /> Nueva Invitación
+            </button>
+          </div>
+          {invites.length === 0 ? (
+            <div className="text-center py-12 text-zinc-600 text-sm">No hay invitaciones</div>
+          ) : (
+            <div className="space-y-2">
+              {invites.map((inv, i) => {
+                const expired = inv.expires_at ? new Date(inv.expires_at) < new Date() : false;
+                return (
+                  <div key={inv.token || i} className={cn("flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-xl border transition-all",
+                    inv.used ? 'bg-emerald-500/5 border-emerald-500/10' : expired ? 'bg-red-500/5 border-red-500/10' : 'bg-zinc-950/50 border-white/5')}>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-zinc-100 truncate">{inv.email}</p>
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border", ROLE_COLORS[inv.role] || 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30')}>
+                          {ROLE_LABELS[inv.role] || inv.role}
+                        </span>
+                        {inv.used ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Registrado</span>
+                        ) : expired ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-red-500/15 text-red-400 border border-red-500/20">Expirada</span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-500/15 text-amber-400 border border-amber-500/20">Pendiente</span>
+                        )}
+                      </div>
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    {!inv.used && !expired && (
+                      <div className="flex gap-2 shrink-0">
+                        <button onClick={() => copyToken(inv.token)} className="px-3 py-1.5 text-xs font-medium rounded-lg bg-zinc-800 text-zinc-300 hover:text-white border border-white/10 transition-colors flex items-center gap-1.5">
+                          {copiedToken === inv.token ? <><Check className="w-3 h-3 text-emerald-400" /> Copiado</> : <><CloudUpload className="w-3 h-3" /> Copiar Token</>}
+                        </button>
+                        <button onClick={() => revokeInvite(inv.token)} className="px-3 py-1.5 text-xs font-medium rounded-lg text-red-400 hover:bg-red-500/10 border border-red-500/20 transition-colors">
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-zinc-600 shrink-0">
+                      {inv.expires_at ? `Expira: ${new Date(inv.expires_at).toLocaleDateString('es-MX')}` : inv.created_at ? `Creada: ${new Date(inv.created_at).toLocaleDateString('es-MX')}` : ''}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Modal Crear/Editar */}
-      {showModal && (
-        <UserModal
-          user={editing}
-          onClose={() => setShowModal(false)}
-          onSaved={(u) => {
-            if (editing) setUsers(prev => prev.map(x => x.uid === u.uid ? u : x));
-            else setUsers(prev => [...prev, u]);
-            setShowModal(false);
-            notify(editing ? 'Usuario actualizado' : 'Usuario creado');
-          }}
+      {/* Modal Editar Usuario */}
+      {showEdit && (
+        <UserEditModal
+          user={showEdit}
+          onClose={() => setShowEdit(null)}
+          onSaved={(u) => { setUsers(prev => prev.map(x => x.uid === u.uid ? u : x)); setShowEdit(null); notify('Usuario actualizado'); }}
+        />
+      )}
+
+      {/* Modal Invitar Usuario */}
+      {showInvite && (
+        <InviteModal
+          onClose={() => setShowInvite(false)}
+          onCreated={(inv) => { setInvites(prev => [inv, ...prev]); setShowInvite(false); notify('Invitación creada — comparte el token con el usuario'); }}
         />
       )}
 
@@ -305,13 +378,10 @@ function UsuariosTab() {
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
             <h3 className="text-lg font-bold text-zinc-100">Restablecer Contraseña</h3>
+            <p className="text-xs text-zinc-500">Mín. 8 caracteres, 1 mayúscula y 1 número</p>
             <div className="relative">
-              <input
-                type={showPwd ? 'text' : 'password'}
-                value={newPwd} onChange={e => setNewPwd(e.target.value)}
-                placeholder="Nueva contraseña..."
-                className="w-full pr-10 px-4 py-2.5 bg-zinc-950/50 border border-white/10 rounded-xl text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
-              />
+              <input type={showPwd ? 'text' : 'password'} value={newPwd} onChange={e => setNewPwd(e.target.value)} placeholder="Nueva contraseña segura..."
+                className="w-full pr-10 px-4 py-2.5 bg-zinc-950/50 border border-white/10 rounded-xl text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500/50" />
               <button type="button" onClick={() => setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500">
                 {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -327,37 +397,18 @@ function UsuariosTab() {
   );
 }
 
-function UserModal({ user, onClose, onSaved }: { user: AdminUser | null; onClose: () => void; onSaved: (u: AdminUser) => void }) {
-  const [form, setForm] = useState({
-    nombres: user?.nombres || '',
-    email:   user?.email   || '',
-    role:    user?.role    || 'vendedor',
-    password: '',
-  });
+/** Modal para editar un usuario existente */
+function UserEditModal({ user, onClose, onSaved }: { user: AdminUser; onClose: () => void; onSaved: (u: AdminUser) => void }) {
+  const [form, setForm] = useState({ nombres: user.nombres, email: user.email, role: user.role });
   const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState('');
-
+  const [err, setErr] = useState('');
   const handle = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
 
   const submit = async () => {
     if (!form.nombres || !form.email) { setErr('Nombre y email son requeridos'); return; }
-    if (!user && !form.password)      { setErr('La contraseña es requerida al crear'); return; }
     setSaving(true); setErr('');
     try {
-      let res: AdminUser;
-      if (user) {
-        const r = await fetch(`/api/admin/users/${user.uid}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nombres: form.nombres, email: form.email, role: form.role })
-        });
-        res = await r.json();
-      } else {
-        const r = await fetch('/api/admin/users', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(form)
-        });
-        res = await r.json();
-      }
+      const res = await api.patch(`/admin/users/${user.uid}`, form);
       onSaved(res);
     } catch { setErr('Error al guardar'); }
     setSaving(false);
@@ -367,35 +418,93 @@ function UserModal({ user, onClose, onSaved }: { user: AdminUser | null; onClose
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
         <div className="flex justify-between items-center">
-          <h3 className="text-lg font-bold text-zinc-100">{user ? 'Editar Usuario' : 'Nuevo Usuario'}</h3>
+          <h3 className="text-lg font-bold text-zinc-100">Editar Usuario</h3>
           <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg transition-colors"><X className="w-4 h-4" /></button>
         </div>
         {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
         <div className="space-y-3">
-          <Field label="Nombre completo">
-            <input value={form.nombres} onChange={e => handle('nombres', e.target.value)} placeholder="Ej. Laura Martínez" className={inputCls} />
-          </Field>
-          <Field label="Correo electrónico">
-            <input type="email" value={form.email} onChange={e => handle('email', e.target.value)} placeholder="laura@hdreams.com" className={inputCls} />
-          </Field>
+          <Field label="Nombre completo"><input value={form.nombres} onChange={e => handle('nombres', e.target.value)} className={inputCls} /></Field>
+          <Field label="Correo electrónico"><input type="email" value={form.email} onChange={e => handle('email', e.target.value)} className={inputCls} /></Field>
           <Field label="Rol">
             <select value={form.role} onChange={e => handle('role', e.target.value)} className={inputCls}>
               {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
             </select>
           </Field>
-          {!user && (
-            <Field label="Contraseña inicial">
-              <input type="password" value={form.password} onChange={e => handle('password', e.target.value)} placeholder="Mínimo 6 caracteres" className={inputCls} />
-            </Field>
-          )}
         </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
           <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
             {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-            {saving ? 'Guardando...' : user ? 'Actualizar' : 'Crear Usuario'}
+            {saving ? 'Guardando...' : 'Actualizar'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Modal para crear una invitación (reemplaza creación directa de usuario) */
+function InviteModal({ onClose, onCreated }: { onClose: () => void; onCreated: (inv: Invitation) => void }) {
+  const [form, setForm] = useState({ email: '', role: 'vendedor', nombres: '' });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+  const [result, setResult] = useState<Invitation | null>(null);
+  const handle = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    if (!form.email) { setErr('Email es requerido'); return; }
+    setSaving(true); setErr('');
+    try {
+      const res = await api.post('/invitations', form);
+      setResult(res);
+      onCreated(res);
+    } catch (e: any) { setErr(e.message || 'Error al crear invitación'); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold text-zinc-100">{result ? 'Invitación Creada' : 'Invitar Nuevo Usuario'}</h3>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg transition-colors"><X className="w-4 h-4" /></button>
+        </div>
+        {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
+        {result ? (
+          <div className="space-y-3">
+            <p className="text-sm text-zinc-300">Comparte este token con <strong className="text-white">{result.email}</strong> para que se registre:</p>
+            <div className="bg-zinc-950 border border-amber-500/20 rounded-xl p-3 flex items-center gap-2">
+              <code className="flex-1 text-xs text-amber-300 font-mono break-all select-all">{result.token}</code>
+              <button onClick={() => { navigator.clipboard.writeText(result.token); }} className="shrink-0 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-lg transition-colors">Copiar</button>
+            </div>
+            <p className="text-[10px] text-zinc-500">Expira: {result.expiresAt ? new Date(result.expiresAt).toLocaleString('es-MX') : '48 horas'}</p>
+            <button onClick={onClose} className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors">Cerrar</button>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              <Field label="Email del nuevo usuario">
+                <input type="email" value={form.email} onChange={e => handle('email', e.target.value)} placeholder="nuevo@hdreams.com" className={inputCls} />
+              </Field>
+              <Field label="Rol asignado">
+                <select value={form.role} onChange={e => handle('role', e.target.value)} className={inputCls}>
+                  {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                </select>
+              </Field>
+              <Field label="Nombre (opcional)">
+                <input value={form.nombres} onChange={e => handle('nombres', e.target.value)} placeholder="Ej. Laura Martínez" className={inputCls} />
+              </Field>
+            </div>
+            <p className="text-[10px] text-zinc-500">El usuario recibirá un token que deberá usar para registrarse. La invitación expira en 48 horas.</p>
+            <div className="flex gap-3 pt-2">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+              <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+                {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                {saving ? 'Creando...' : 'Generar Invitación'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -420,7 +529,8 @@ function GastosTab() {
     setLoading(true);
     try {
       const r = await fetch('/api/admin/expenses');
-      setExpenses(await r.json());
+      const d = await r.json();
+      setExpenses(Array.isArray(d) ? d : []);
     } catch { notify('Error cargando gastos'); }
     setLoading(false);
   };
@@ -674,7 +784,10 @@ const ALL_COLUMNS = [
   { id: 'estado_geo',    label: 'Estado (Geo)',       group: 'Ubicación' },
 ];
 
-const getToken = () => JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || '';
+const getToken = () => {
+  try { return JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || ''; }
+  catch { return ''; }
+};
 const authHdr  = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` });
 
 function ColumnasTab() {
@@ -1330,7 +1443,7 @@ function BotTab() {
 }
 
 /* ═══════════════════════════════════════════
-   TAB — CANALES WhatsApp (Multi-cuenta)
+   TAB — CANALES WhatsApp + Facebook (Multi-cuenta)
 ═══════════════════════════════════════════ */
 type WAAccount = {
   id: string; nombre: string; phoneId: string; accessToken: string;
@@ -1339,6 +1452,27 @@ type WAAccount = {
   status: 'activo'|'inactivo'|'error'|'sin_configurar';
   displayPhone?: string; lastChecked?: string;
 };
+type FBAccount = {
+  id: string; nombre: string; pageId: string; accessToken: string;
+  tipo: 'reclutamiento'|'clientes'|'cobranza'|'soporte'|'marketing';
+  activo: boolean;
+  status: 'activo'|'inactivo'|'error'|'sin_configurar';
+  pageName?: string; category?: string; lastChecked?: string;
+};
+type WAQRCanalSession = {
+  id: string; nombre: string; tipo: 'personal'|'business';
+  activo: boolean; phoneNumber?: string; createdAt: string;
+};
+type TelegramBot = {
+  id: string; nombre: string; token: string; activo: boolean;
+  status: 'activo'|'inactivo'|'error'|'sin_configurar';
+  botUsername?: string; botName?: string; lastChecked?: string;
+};
+type QRSessionStatus = {
+  status: 'desconectado'|'esperando_qr'|'qr_listo'|'autenticando'|'conectado'|'error';
+  qr?: string; phoneNumber?: string; error?: string;
+};
+const IS_DEV = (import.meta as any).env?.DEV ?? false;
 
 const TIPO_LABELS: Record<string, string> = {
   reclutamiento: 'Reclutamiento', clientes: 'Clientes', cobranza: 'Cobranza', soporte: 'Soporte',
@@ -1455,31 +1589,457 @@ function WAAccountModal({
   );
 }
 
+function FBAccountModal({
+  account, onClose, onSaved,
+}: { account: FBAccount | null; onClose: () => void; onSaved: (a: FBAccount) => void }) {
+  const [form, setForm] = useState({
+    nombre:      account?.nombre || '',
+    pageId:      account?.pageId || '',
+    accessToken: '',
+    tipo:        account?.tipo   || 'marketing' as FBAccount['tipo'],
+    activo:      account?.activo !== false,
+  });
+  const [saving, setSaving]     = useState(false);
+  const [err, setErr]           = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const handle = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    if (!form.nombre) { setErr('El nombre es requerido'); return; }
+    setSaving(true); setErr('');
+    try {
+      const body: any = { nombre: form.nombre, pageId: form.pageId, tipo: form.tipo, activo: form.activo };
+      if (form.accessToken) body.accessToken = form.accessToken;
+      let r;
+      if (account) {
+        r = await fetch(`/api/fb/accounts/${account.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      } else {
+        r = await fetch('/api/fb/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error); }
+      onSaved(await r.json());
+    } catch (e: any) { setErr(e.message || 'Error al guardar'); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold text-zinc-100">{account ? 'Editar página Facebook' : 'Nueva página Facebook'}</h3>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+        {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
+        <div className="space-y-3">
+          <Field label="Nombre de la cuenta">
+            <input value={form.nombre} onChange={e => handle('nombre', e.target.value)} placeholder="Ej. Página Heavenly Dreams" className={inputCls} />
+          </Field>
+          <Field label="Uso">
+            <select value={form.tipo} onChange={e => handle('tipo', e.target.value)} className={inputCls}>
+              <option value="marketing">Marketing</option>
+              <option value="reclutamiento">Reclutamiento</option>
+              <option value="clientes">Clientes</option>
+              <option value="cobranza">Cobranza</option>
+              <option value="soporte">Soporte</option>
+            </select>
+          </Field>
+          <Field label="Facebook Page ID">
+            <input value={form.pageId} onChange={e => handle('pageId', e.target.value)} placeholder="123456789012345" className={inputCls} />
+          </Field>
+          <Field label={account ? 'Nuevo Page Access Token (dejar vacío = sin cambios)' : 'Page Access Token'}>
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={form.accessToken} onChange={e => handle('accessToken', e.target.value)}
+                placeholder={account ? 'Solo si quieres cambiarlo...' : 'EAA...'}
+                className={cn(inputCls, 'pr-10')}
+              />
+              <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-zinc-600 mt-1">Token de página permanente desde Business Manager → System Users.</p>
+          </Field>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => handle('activo', !form.activo)}
+              className={cn('relative w-10 h-6 rounded-full transition-colors border', form.activo ? 'bg-emerald-500 border-emerald-400' : 'bg-zinc-700 border-zinc-600')}
+            >
+              <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', form.activo ? 'left-4' : 'left-0.5')} />
+            </button>
+            <span className="text-sm text-zinc-300">{form.activo ? 'Cuenta activa' : 'Cuenta inactiva'}</span>
+          </div>
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            {saving ? 'Guardando...' : account ? 'Actualizar' : 'Crear página'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── WhatsApp QR Modal ────────────────────────────────────────────
+function WAQRModal({ session, onClose, onConnected }: {
+  session: WAQRCanalSession; onClose: () => void; onConnected: (phone: string) => void;
+}) {
+  const [state, setState] = React.useState<QRSessionStatus>({ status: 'desconectado' });
+  const [mode, setMode]   = React.useState<'real'|'stub'>('stub');
+  const [loading, setLoading] = React.useState(false);
+  const pollRef = React.useRef<ReturnType<typeof setInterval>|null>(null);
+
+  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const poll = () => {
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/canales/whatsapp-qr/${session.id}/status`);
+        const d = await r.json();
+        setMode(d.mode);
+        setState(d.state);
+        if (d.state.status === 'conectado') {
+          stopPoll();
+          if (d.state.phoneNumber) onConnected(d.state.phoneNumber);
+        }
+      } catch {}
+    }, 2000);
+  };
+
+  const start = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/canales/whatsapp-qr/${session.id}/start`, { method: 'POST' });
+      const d = await r.json();
+      setMode(d.mode);
+      setState(d.state);
+      poll();
+    } catch {}
+    setLoading(false);
+  };
+
+  const disconnect = async () => {
+    stopPoll();
+    await fetch(`/api/canales/whatsapp-qr/${session.id}/disconnect`, { method: 'POST' });
+    setState({ status: 'desconectado' });
+  };
+
+  const stubConnect = async () => {
+    await fetch(`/api/canales/whatsapp-qr/${session.id}/stub-connect`, { method: 'POST' });
+  };
+
+  React.useEffect(() => {
+    // Check current status on open
+    fetch(`/api/canales/whatsapp-qr/${session.id}/status`)
+      .then(r => r.json()).then(d => { setMode(d.mode); setState(d.state); if (d.state.status !== 'conectado') poll(); })
+      .catch(() => {});
+    return () => stopPoll();
+  }, [session.id]);
+
+  const QR_URL = state.qr
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=10&data=${encodeURIComponent(state.qr)}`
+    : null;
+
+  const isWA  = session.tipo === 'personal';
+  const color = isWA ? 'bg-emerald-600' : 'bg-teal-600';
+  const label = isWA ? 'WhatsApp' : 'WhatsApp Business';
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4">
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <span className={cn('px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider text-white', color)}>{label}</span>
+            <span className="text-sm font-semibold text-zinc-200 truncate">{session.nombre}</span>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+
+        {/* QR / Estado */}
+        <div className="flex flex-col items-center gap-3 py-2">
+          {state.status === 'desconectado' && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-2xl bg-zinc-800 border border-white/5 flex items-center justify-center mx-auto">
+                <Smartphone className="w-10 h-10 text-zinc-600" />
+              </div>
+              <p className="text-sm text-zinc-400">Sesión no iniciada</p>
+              <button onClick={start} disabled={loading} className={cn('px-5 py-2.5 rounded-xl text-white text-sm font-semibold transition-all flex items-center gap-2 mx-auto', color.replace('bg-','bg-').replace('600','600') + ' hover:opacity-90')}>
+                {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Iniciando…</> : <><Zap className="w-4 h-4" /> Generar QR</>}
+              </button>
+            </div>
+          )}
+
+          {(state.status === 'esperando_qr' || state.status === 'autenticando') && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-2xl bg-zinc-800 border border-white/5 flex items-center justify-center mx-auto">
+                <Loader2 className="w-10 h-10 text-zinc-500 animate-spin" />
+              </div>
+              <p className="text-sm text-zinc-400">{state.status === 'autenticando' ? 'Autenticando...' : 'Generando QR...'}</p>
+            </div>
+          )}
+
+          {state.status === 'qr_listo' && QR_URL && (
+            <div className="text-center space-y-3">
+              <div className="bg-white p-2 rounded-xl inline-block shadow-xl">
+                <img src={QR_URL} alt="QR WhatsApp" className="w-56 h-56 rounded-lg" />
+              </div>
+              <p className="text-xs text-zinc-400">
+                Abre {label} → <span className="font-semibold text-zinc-200">Dispositivos vinculados</span> → Vincular dispositivo
+              </p>
+              {mode === 'stub' && IS_DEV && (
+                <button onClick={stubConnect} className="text-[10px] text-zinc-600 hover:text-zinc-400 underline">
+                  [DEV] Simular escaneo
+                </button>
+              )}
+            </div>
+          )}
+
+          {state.status === 'conectado' && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border-2 border-emerald-500/40 flex items-center justify-center mx-auto">
+                <Check className="w-10 h-10 text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-emerald-400">Conectado</p>
+                {state.phoneNumber && <p className="text-xs text-zinc-500 font-mono mt-0.5">{state.phoneNumber}</p>}
+              </div>
+              <button onClick={disconnect} className="text-xs text-red-400 hover:text-red-300 underline">Desconectar sesión</button>
+            </div>
+          )}
+
+          {state.status === 'error' && (
+            <div className="text-center space-y-3">
+              <div className="w-20 h-20 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto">
+                <AlertTriangle className="w-10 h-10 text-red-400" />
+              </div>
+              <p className="text-xs text-red-400">{state.error || 'Error al conectar'}</p>
+              <button onClick={start} className="text-xs text-zinc-400 hover:text-white underline">Reintentar</button>
+            </div>
+          )}
+        </div>
+
+        {mode === 'stub' && state.status !== 'conectado' && (
+          <p className="text-[10px] text-center text-zinc-700">Modo demo — instala <span className="font-mono">whatsapp-web.js</span> para QR real</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Telegram Bot Modal ───────────────────────────────────────────
+function TelegramBotModal({ bot, onClose, onSaved }: {
+  bot: TelegramBot | null; onClose: () => void; onSaved: (b: TelegramBot) => void;
+}) {
+  const [form, setForm] = React.useState({ nombre: bot?.nombre || '', token: '', activo: bot?.activo !== false });
+  const [saving, setSaving]     = React.useState(false);
+  const [err, setErr]           = React.useState('');
+  const [showToken, setShowToken] = React.useState(false);
+  const handle = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    if (!form.nombre) { setErr('El nombre es requerido'); return; }
+    setSaving(true); setErr('');
+    try {
+      const body: any = { nombre: form.nombre, activo: form.activo };
+      if (form.token) body.token = form.token;
+      let r;
+      if (bot) {
+        r = await fetch(`/api/canales/telegram/${bot.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      } else {
+        if (!form.token) { setErr('El token es requerido'); setSaving(false); return; }
+        r = await fetch('/api/canales/telegram', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error); }
+      onSaved(await r.json());
+    } catch (e: any) { setErr(e.message || 'Error al guardar'); }
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-[#229ED9] flex items-center justify-center text-white text-[11px] font-black">✈</span>
+            {bot ? 'Editar bot Telegram' : 'Nuevo bot Telegram'}
+          </h3>
+          <button onClick={onClose} className="p-1.5 text-zinc-500 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+        {err && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">{err}</p>}
+        <div className="space-y-3">
+          <Field label="Nombre del bot">
+            <input value={form.nombre} onChange={e => handle('nombre', e.target.value)} placeholder="Ej. Bot Reclutamiento HD" className={inputCls} />
+          </Field>
+          <Field label={bot ? 'Nuevo Token (dejar vacío = sin cambios)' : 'Bot Token'}>
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={form.token} onChange={e => handle('token', e.target.value)}
+                placeholder={bot ? 'Solo si quieres cambiarlo...' : '123456789:AAF...'}
+                className={cn(inputCls, 'pr-10')}
+              />
+              <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-zinc-600 mt-1">Obtén el token de <span className="text-[#229ED9] font-mono">@BotFather</span> en Telegram → /newbot</p>
+          </Field>
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => handle('activo', !form.activo)}
+              className={cn('relative w-10 h-6 rounded-full transition-colors border', form.activo ? 'bg-[#229ED9] border-[#229ED9]/60' : 'bg-zinc-700 border-zinc-600')}>
+              <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', form.activo ? 'left-4' : 'left-0.5')} />
+            </button>
+            <span className="text-sm text-zinc-300">{form.activo ? 'Bot activo' : 'Bot inactivo'}</span>
+          </div>
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-[#229ED9] hover:bg-[#1a8bbf] text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            {saving ? 'Guardando...' : bot ? 'Actualizar' : 'Agregar bot'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const FB_TIPO_LABELS: Record<string, string> = {
+  marketing: 'Marketing', reclutamiento: 'Reclutamiento', clientes: 'Clientes', cobranza: 'Cobranza', soporte: 'Soporte',
+};
+const FB_TIPO_COLORS: Record<string, string> = {
+  marketing:     'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  reclutamiento: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
+  clientes:      'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  cobranza:      'bg-red-500/10 text-red-400 border-red-500/20',
+  soporte:       'bg-amber-500/10 text-amber-400 border-amber-500/20',
+};
+
 function CanalesTab() {
+  // WhatsApp state
   const [accounts, setAccounts] = useState<WAAccount[]>([]);
   const [loading, setLoading]   = useState(true);
   const [editing, setEditing]   = useState<WAAccount | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [testing, setTesting]   = useState<string | null>(null);
-  const [toast, setToast]       = useState('');
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
 
+  // Facebook state
+  const [fbAccounts, setFbAccounts]     = useState<FBAccount[]>([]);
+  const [fbLoading, setFbLoading]       = useState(true);
+  const [fbEditing, setFbEditing]       = useState<FBAccount | null>(null);
+  const [showFbModal, setShowFbModal]   = useState(false);
+  const [fbTesting, setFbTesting]       = useState<string | null>(null);
+  const [fbTestResults, setFbTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+
+  // WhatsApp QR state
+  const [wqrSessions, setWqrSessions]   = useState<WAQRCanalSession[]>([]);
+  const [wqrLoading, setWqrLoading]     = useState(true);
+  const [wqrModal, setWqrModal]         = useState<WAQRCanalSession | null>(null);
+  const [showNewWqr, setShowNewWqr]     = useState(false);
+  const [newWqrForm, setNewWqrForm]     = useState({ nombre: '', tipo: 'personal' as 'personal'|'business' });
+
+  // Telegram state
+  const [tgBots, setTgBots]             = useState<TelegramBot[]>([]);
+  const [tgLoading, setTgLoading]       = useState(true);
+  const [tgEditing, setTgEditing]       = useState<TelegramBot | null>(null);
+  const [showTgModal, setShowTgModal]   = useState(false);
+  const [tgTesting, setTgTesting]       = useState<string | null>(null);
+  const [tgTestResults, setTgTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+
+  const [toast, setToast] = useState('');
   const notify = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3200); };
 
   const load = async () => {
     setLoading(true);
-    try { setAccounts(await (await fetch('/api/wa/accounts')).json()); }
-    catch { notify('Error cargando cuentas'); }
+    try { const d = await (await fetch('/api/wa/accounts')).json(); setAccounts(Array.isArray(d) ? d : []); }
+    catch { notify('Error cargando cuentas WA'); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  const loadFb = async () => {
+    setFbLoading(true);
+    try { const d = await (await fetch('/api/fb/accounts')).json(); setFbAccounts(Array.isArray(d) ? d : []); }
+    catch { notify('Error cargando cuentas Facebook'); }
+    finally { setFbLoading(false); }
+  };
+
+  const loadWqr = async () => {
+    setWqrLoading(true);
+    try { const d = await (await fetch('/api/canales/whatsapp-qr')).json(); setWqrSessions(Array.isArray(d) ? d : []); }
+    catch { notify('Error cargando sesiones WA QR'); }
+    finally { setWqrLoading(false); }
+  };
+
+  const loadTg = async () => {
+    setTgLoading(true);
+    try { const d = await (await fetch('/api/canales/telegram')).json(); setTgBots(Array.isArray(d) ? d : []); }
+    catch { notify('Error cargando bots Telegram'); }
+    finally { setTgLoading(false); }
+  };
+
+  useEffect(() => { load(); loadFb(); loadWqr(); loadTg(); }, []);
 
   const del = async (id: string, nombre: string) => {
     if (!confirm(`¿Eliminar "${nombre}"?`)) return;
     await fetch(`/api/wa/accounts/${id}`, { method: 'DELETE' });
     setAccounts(prev => prev.filter(a => a.id !== id));
     notify('Cuenta eliminada');
+  };
+
+  const delFb = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar "${nombre}"?`)) return;
+    await fetch(`/api/fb/accounts/${id}`, { method: 'DELETE' });
+    setFbAccounts(prev => prev.filter(a => a.id !== id));
+    notify('Página eliminada');
+  };
+
+  const createWqrSession = async () => {
+    if (!newWqrForm.nombre) { notify('Escribe un nombre'); return; }
+    try {
+      const r = await fetch('/api/canales/whatsapp-qr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newWqrForm) });
+      const s = await r.json() as WAQRCanalSession;
+      setWqrSessions(prev => [...prev, s]);
+      setShowNewWqr(false);
+      setNewWqrForm({ nombre: '', tipo: 'personal' });
+      setWqrModal(s);
+      notify('Sesión creada — escanea el QR');
+    } catch { notify('Error creando sesión'); }
+  };
+
+  const delWqr = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar sesión "${nombre}"?`)) return;
+    await fetch(`/api/canales/whatsapp-qr/${id}`, { method: 'DELETE' });
+    setWqrSessions(prev => prev.filter(s => s.id !== id));
+    notify('Sesión eliminada');
+  };
+
+  const testTgBot = async (id: string) => {
+    setTgTesting(id);
+    try {
+      const r = await fetch(`/api/canales/telegram/${id}/test`, { method: 'POST' });
+      const data = await r.json() as { ok: boolean; error?: string; botUsername?: string; botName?: string };
+      setTgTestResults(prev => ({
+        ...prev,
+        [id]: data.ok
+          ? { ok: true, msg: `✅ @${data.botUsername} — ${data.botName}` }
+          : { ok: false, msg: `❌ ${data.error || 'Token inválido'}` },
+      }));
+      await loadTg();
+    } catch { setTgTestResults(prev => ({ ...prev, [id]: { ok: false, msg: '❌ Error de red' } })); }
+    finally { setTgTesting(null); }
+  };
+
+  const delTg = async (id: string, nombre: string) => {
+    if (!confirm(`¿Eliminar bot "${nombre}"?`)) return;
+    await fetch(`/api/canales/telegram/${id}`, { method: 'DELETE' });
+    setTgBots(prev => prev.filter(b => b.id !== id));
+    notify('Bot eliminado');
   };
 
   const testAccount = async (id: string) => {
@@ -1493,10 +2053,25 @@ function CanalesTab() {
           ? { ok: true, msg: `✅ Conectada${data.displayPhone ? ` — ${data.displayPhone}` : ''}${data.verifiedName ? ` (${data.verifiedName})` : ''}` }
           : { ok: false, msg: `❌ ${data.error || 'Error desconocido'}` },
       }));
-      // Refresh to pick up status change
       await load();
     } catch { setTestResults(prev => ({ ...prev, [id]: { ok: false, msg: '❌ Error de red' } })); }
     finally { setTesting(null); }
+  };
+
+  const testFbAccount = async (id: string) => {
+    setFbTesting(id);
+    try {
+      const r = await fetch(`/api/fb/accounts/${id}/test`, { method: 'POST' });
+      const data = await r.json() as { ok: boolean; error?: string; pageName?: string; category?: string };
+      setFbTestResults(prev => ({
+        ...prev,
+        [id]: data.ok
+          ? { ok: true, msg: `✅ Conectada${data.pageName ? ` — ${data.pageName}` : ''}${data.category ? ` (${data.category})` : ''}` }
+          : { ok: false, msg: `❌ ${data.error || 'Error desconocido'}` },
+      }));
+      await loadFb();
+    } catch { setFbTestResults(prev => ({ ...prev, [id]: { ok: false, msg: '❌ Error de red' } })); }
+    finally { setFbTesting(null); }
   };
 
   // Group by tipo
@@ -1651,9 +2226,9 @@ function CanalesTab() {
         </div>
       )}
 
-      {/* Setup guide */}
+      {/* Setup guide WA */}
       <div className="bg-zinc-950/30 border border-white/5 rounded-xl p-5 space-y-3">
-        <p className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">Guía de configuración</p>
+        <p className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">Guía — WhatsApp Business</p>
         <ol className="space-y-1.5 text-xs text-zinc-400 list-decimal list-inside">
           <li>Ve a <span className="text-indigo-400 font-mono">developers.facebook.com</span> → tu app → WhatsApp → API Setup</li>
           <li>Obtén el <span className="text-zinc-200 font-semibold">Phone Number ID</span> de cada número registrado</li>
@@ -1664,6 +2239,269 @@ function CanalesTab() {
         </ol>
       </div>
 
+      {/* ── SECCIÓN FACEBOOK ─────────────────────────── */}
+      <div className="border-t border-white/5 pt-6 space-y-6">
+        {/* FB Header */}
+        <div className="flex flex-wrap justify-between items-start gap-4">
+          <div>
+            <h3 className="text-zinc-100 font-bold text-base flex items-center gap-2">
+              <span className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center text-white text-[10px] font-black">f</span>
+              Páginas Facebook
+            </h3>
+            <p className="text-zinc-500 text-sm mt-1">
+              Conecta tus páginas de Facebook para publicaciones y Messenger.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadFb} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
+              <RefreshCw className={cn('w-4 h-4', fbLoading && 'animate-spin')} />
+            </button>
+            <button
+              onClick={() => { setFbEditing(null); setShowFbModal(true); }}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
+            >
+              <Plus className="w-4 h-4" /> Nueva página
+            </button>
+          </div>
+        </div>
+
+        {/* FB account cards */}
+        {fbLoading ? (
+          <div className="text-center py-10 text-zinc-500">Cargando páginas…</div>
+        ) : fbAccounts.length === 0 ? (
+          <div className="text-center py-12 text-zinc-600 border border-dashed border-white/8 rounded-xl">
+            <span className="text-3xl block mb-2">f</span>
+            <p className="font-medium">Sin páginas configuradas</p>
+            <p className="text-sm mt-1">Agrega tu primera página de Facebook con el botón de arriba.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {fbAccounts.map(acc => {
+              const st = STATUS_CFG[acc.status] || STATUS_CFG.sin_configurar;
+              const tr = fbTestResults[acc.id];
+              return (
+                <div key={acc.id} className={cn('bg-zinc-950/50 border rounded-xl p-5 flex flex-col gap-3 transition-all', acc.activo ? 'border-white/8 hover:border-white/15' : 'border-white/3 opacity-60')}>
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('w-2 h-2 rounded-full shrink-0', st.dot)} />
+                        <p className="text-sm font-semibold text-zinc-100 truncate">{acc.nombre}</p>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono mt-0.5">{acc.pageName || (acc.pageId ? `ID: ${acc.pageId.slice(0,8)}…` : 'Sin Page ID')}</p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider', st.cls)}>{st.label}</span>
+                      <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider', FB_TIPO_COLORS[acc.tipo])}>{FB_TIPO_LABELS[acc.tipo]}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className={cn('w-1.5 h-1.5 rounded-full', acc.pageId ? 'bg-emerald-500' : 'bg-zinc-600')} />
+                    <span className={acc.pageId ? 'text-zinc-400' : 'text-zinc-600'}>Page ID {acc.pageId ? '✓' : '—'}</span>
+                    <span className={cn('w-1.5 h-1.5 rounded-full ml-2', acc.accessToken ? 'bg-emerald-500' : 'bg-zinc-600')} />
+                    <span className={acc.accessToken ? 'text-zinc-400' : 'text-zinc-600'}>Token {acc.accessToken ? `(${acc.accessToken})` : '—'}</span>
+                  </div>
+                  {tr && (
+                    <p className={cn('text-[11px] font-medium px-2 py-1 rounded-lg', tr.ok ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300')}>
+                      {tr.msg}
+                    </p>
+                  )}
+                  <div className="flex gap-2 mt-auto">
+                    <button
+                      onClick={() => { setFbEditing(acc); setShowFbModal(true); }}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-zinc-300 bg-zinc-800/80 hover:bg-zinc-700 transition-colors border border-white/5"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" /> Configurar
+                    </button>
+                    <button
+                      onClick={() => testFbAccount(acc.id)}
+                      disabled={fbTesting === acc.id || !acc.pageId || !acc.accessToken}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600/80 hover:bg-blue-600 transition-colors disabled:opacity-40 border border-blue-500/30"
+                    >
+                      {fbTesting === acc.id
+                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Probando…</>
+                        : <><Zap className="w-3.5 h-3.5" /> Probar</>
+                      }
+                    </button>
+                    <button
+                      onClick={() => delFb(acc.id, acc.nombre)}
+                      className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Setup guide FB */}
+        <div className="bg-zinc-950/30 border border-white/5 rounded-xl p-5 space-y-3">
+          <p className="text-[10px] uppercase tracking-wider font-bold text-zinc-500">Guía — Facebook Pages</p>
+          <ol className="space-y-1.5 text-xs text-zinc-400 list-decimal list-inside">
+            <li>Ve a <span className="text-blue-400 font-mono">developers.facebook.com</span> → tu app → Facebook Login → OAuth</li>
+            <li>Obtén el <span className="text-zinc-200 font-semibold">Page ID</span> desde la configuración de tu página de Facebook</li>
+            <li>Genera un <span className="text-zinc-200 font-semibold">Page Access Token permanente</span> desde Business Manager → System Users con permiso <span className="font-mono text-zinc-300">pages_messaging</span></li>
+            <li>Pega Page ID + Token en el modal de configuración</li>
+            <li>Presiona <span className="text-zinc-200 font-semibold">Probar</span> para verificar la conexión</li>
+          </ol>
+        </div>
+      </div>
+
+      {/* ── SECCIÓN WHATSAPP QR ──────────────────────── */}
+      <div className="border-t border-white/5 pt-6 space-y-5">
+        <div className="flex flex-wrap justify-between items-start gap-4">
+          <div>
+            <h3 className="text-zinc-100 font-bold text-base flex items-center gap-2">
+              <span className="w-5 h-5 rounded bg-emerald-600 flex items-center justify-center text-white text-[11px]">✓</span>
+              WhatsApp QR — Personal y Business
+            </h3>
+            <p className="text-zinc-500 text-sm mt-1">Conecta números de WhatsApp escaneando el código QR.</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadWqr} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
+              <RefreshCw className={cn('w-4 h-4', wqrLoading && 'animate-spin')} />
+            </button>
+            <button onClick={() => setShowNewWqr(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20">
+              <Plus className="w-4 h-4" /> Nueva sesión QR
+            </button>
+          </div>
+        </div>
+
+        {/* New session inline form */}
+        {showNewWqr && (
+          <div className="bg-zinc-950/60 border border-emerald-500/20 rounded-xl p-4 space-y-3">
+            <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Nueva sesión WhatsApp QR</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1">Nombre</label>
+                <input value={newWqrForm.nombre} onChange={e => setNewWqrForm(p => ({ ...p, nombre: e.target.value }))}
+                  placeholder="Ej. Ventas Norte" className={inputCls} />
+              </div>
+              <div>
+                <label className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1">Tipo</label>
+                <select value={newWqrForm.tipo} onChange={e => setNewWqrForm(p => ({ ...p, tipo: e.target.value as 'personal'|'business' }))} className={inputCls}>
+                  <option value="personal">WhatsApp Personal</option>
+                  <option value="business">WhatsApp Business</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowNewWqr(false)} className="px-4 py-2 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white hover:bg-white/5 transition-colors">Cancelar</button>
+              <button onClick={createWqrSession} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold transition-colors">Crear y generar QR</button>
+            </div>
+          </div>
+        )}
+
+        {wqrLoading ? (
+          <div className="text-center py-8 text-zinc-500">Cargando sesiones…</div>
+        ) : wqrSessions.length === 0 ? (
+          <div className="text-center py-10 text-zinc-600 border border-dashed border-white/8 rounded-xl">
+            <Smartphone className="w-8 h-8 mx-auto mb-2 opacity-40" />
+            <p className="text-sm font-medium">Sin sesiones QR configuradas</p>
+            <p className="text-xs mt-1">Agrega una sesión y escanea el QR con tu teléfono.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {wqrSessions.map(s => (
+              <div key={s.id} className="bg-zinc-950/50 border border-white/8 rounded-xl p-4 flex flex-col gap-3 hover:border-white/15 transition-all">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={cn('text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider text-white', s.tipo === 'personal' ? 'bg-emerald-600' : 'bg-teal-600')}>
+                        {s.tipo === 'personal' ? 'Personal' : 'Business'}
+                      </span>
+                    </div>
+                    <p className="text-sm font-semibold text-zinc-100 mt-1 truncate">{s.nombre}</p>
+                    <p className="text-[10px] text-zinc-500 font-mono">{s.phoneNumber || 'Sin número'}</p>
+                  </div>
+                  <span className={cn('text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase tracking-wider shrink-0', s.phoneNumber ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20')}>
+                    {s.phoneNumber ? 'Conectado' : 'Sin conectar'}
+                  </span>
+                </div>
+                <div className="flex gap-2 mt-auto">
+                  <button onClick={() => setWqrModal(s)} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-white bg-emerald-600/80 hover:bg-emerald-600 transition-colors border border-emerald-500/30">
+                    <Smartphone className="w-3.5 h-3.5" /> {s.phoneNumber ? 'Reconectar' : 'Conectar QR'}
+                  </button>
+                  <button onClick={() => delWqr(s.id, s.nombre)} className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── SECCIÓN TELEGRAM ─────────────────────────── */}
+      <div className="border-t border-white/5 pt-6 space-y-5">
+        <div className="flex flex-wrap justify-between items-start gap-4">
+          <div>
+            <h3 className="text-zinc-100 font-bold text-base flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-[#229ED9] flex items-center justify-center text-white text-[11px] font-black">✈</span>
+              Bots de Telegram
+            </h3>
+            <p className="text-zinc-500 text-sm mt-1">Conecta bots de Telegram con token de @BotFather.</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={loadTg} className="p-2.5 text-zinc-400 hover:text-white bg-zinc-950/50 border border-white/5 rounded-xl transition-colors">
+              <RefreshCw className={cn('w-4 h-4', tgLoading && 'animate-spin')} />
+            </button>
+            <button onClick={() => { setTgEditing(null); setShowTgModal(true); }} className="text-white px-4 py-2.5 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-lg" style={{ background: '#229ED9' }}>
+              <Plus className="w-4 h-4" /> Nuevo bot
+            </button>
+          </div>
+        </div>
+
+        {tgLoading ? (
+          <div className="text-center py-8 text-zinc-500">Cargando bots…</div>
+        ) : tgBots.length === 0 ? (
+          <div className="text-center py-10 text-zinc-600 border border-dashed border-white/8 rounded-xl">
+            <span className="text-3xl block mb-2 opacity-50">✈</span>
+            <p className="text-sm font-medium">Sin bots configurados</p>
+            <p className="text-xs mt-1">Crea un bot en @BotFather y pega el token aquí.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {tgBots.map(bot => {
+              const st = STATUS_CFG[bot.status] || STATUS_CFG.sin_configurar;
+              const tr = tgTestResults[bot.id];
+              return (
+                <div key={bot.id} className={cn('bg-zinc-950/50 border rounded-xl p-5 flex flex-col gap-3 transition-all', bot.activo ? 'border-white/8 hover:border-white/15' : 'border-white/3 opacity-60')}>
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('w-2 h-2 rounded-full shrink-0', st.dot)} />
+                        <p className="text-sm font-semibold text-zinc-100 truncate">{bot.nombre}</p>
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono mt-0.5">{bot.botUsername ? `@${bot.botUsername}` : 'Sin verificar'}</p>
+                    </div>
+                    <span className={cn('text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider shrink-0', st.cls)}>{st.label}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className={cn('w-1.5 h-1.5 rounded-full', bot.token ? 'bg-emerald-500' : 'bg-zinc-600')} />
+                    <span className={bot.token ? 'text-zinc-400' : 'text-zinc-600'}>Token {bot.token ? `(${bot.token})` : '—'}</span>
+                  </div>
+                  {tr && <p className={cn('text-[11px] font-medium px-2 py-1 rounded-lg', tr.ok ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300')}>{tr.msg}</p>}
+                  <div className="flex gap-2 mt-auto">
+                    <button onClick={() => { setTgEditing(bot); setShowTgModal(true); }} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-zinc-300 bg-zinc-800/80 hover:bg-zinc-700 transition-colors border border-white/5">
+                      <Edit2 className="w-3.5 h-3.5" /> Editar
+                    </button>
+                    <button onClick={() => testTgBot(bot.id)} disabled={tgTesting === bot.id || !bot.token} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold text-white transition-colors disabled:opacity-40 border" style={{ background: '#229ED9aa', borderColor: '#229ED930' }}>
+                      {tgTesting === bot.id ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Probando…</> : <><Zap className="w-3.5 h-3.5" /> Probar</>}
+                    </button>
+                    <button onClick={() => delTg(bot.id, bot.nombre)} className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Modales */}
       {showModal && (
         <WAAccountModal
           account={editing}
@@ -1673,6 +2511,43 @@ function CanalesTab() {
             else setAccounts(prev => [...prev, saved]);
             setShowModal(false);
             notify(editing ? 'Cuenta actualizada' : 'Cuenta creada');
+          }}
+        />
+      )}
+
+      {showFbModal && (
+        <FBAccountModal
+          account={fbEditing}
+          onClose={() => setShowFbModal(false)}
+          onSaved={saved => {
+            if (fbEditing) setFbAccounts(prev => prev.map(a => a.id === saved.id ? saved : a));
+            else setFbAccounts(prev => [...prev, saved]);
+            setShowFbModal(false);
+            notify(fbEditing ? 'Página actualizada' : 'Página creada');
+          }}
+        />
+      )}
+
+      {wqrModal && (
+        <WAQRModal
+          session={wqrModal}
+          onClose={() => setWqrModal(null)}
+          onConnected={phone => {
+            setWqrSessions(prev => prev.map(s => s.id === wqrModal.id ? { ...s, phoneNumber: phone } : s));
+            notify(`✅ Conectado: ${phone}`);
+          }}
+        />
+      )}
+
+      {showTgModal && (
+        <TelegramBotModal
+          bot={tgEditing}
+          onClose={() => setShowTgModal(false)}
+          onSaved={saved => {
+            if (tgEditing) setTgBots(prev => prev.map(b => b.id === saved.id ? saved : b));
+            else setTgBots(prev => [...prev, saved]);
+            setShowTgModal(false);
+            notify(tgEditing ? 'Bot actualizado' : 'Bot agregado');
           }}
         />
       )}
@@ -1762,7 +2637,7 @@ function KnowledgeBaseTab() {
         fetch('/api/knowledge'),
         fetch('/api/knowledge/stats'),
       ]);
-      setDocs(await dr.json());
+      const dd = await dr.json(); setDocs(Array.isArray(dd) ? dd : []);
       setStats(await sr.json());
     } catch { notify('Error cargando la base de conocimiento'); }
     finally { setLoading(false); }

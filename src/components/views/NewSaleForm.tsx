@@ -553,7 +553,7 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
     categoriaProducto: 'infinitum_puro',
     streamingElegido: 'ninguno',
     mismaDireccionIne: true,
-    coordenadas: '19.432608, -99.133209',
+    coordenadas: '',
     hashExpediente: Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
   });
 
@@ -647,6 +647,28 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
         }
       }
       updateForm(patch);
+
+      // Auto-geocodificar dirección extraída del comprobante → llena coordenadas automáticamente
+      if (type === 'comprobante' && !form.coordenadas) {
+        const addr = [
+          patch.calle        || data.calle,
+          patch.numeroExterior || data.numeroExterior,
+          patch.colonia      || data.colonia,
+          patch.ciudad       || data.ciudad,
+          patch.codigoPostal || data.codigoPostal,
+          'México',
+        ].filter(Boolean).join(', ');
+        if (addr.length > 15) {
+          api.post('/geocode', { address: addr })
+            .then((geo: any) => {
+              if (geo?.lat && geo?.lng) {
+                updateForm({ coordenadas: `${(geo.lat as number).toFixed(6)}, ${(geo.lng as number).toFixed(6)}` });
+              }
+            })
+            .catch(() => {}); // silencioso — usuario puede capturar GPS manualmente
+        }
+      }
+
       setOcrVerified(p => ({ ...p, [field]: true }));
       setTimeout(() => setOcrVerified(p => ({ ...p, [field]: false })), 8000);
     } catch (err: any) {
@@ -1232,7 +1254,7 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                 <div className="flex gap-2 items-end">
                   <input type="text" className="flex-1 bg-slate-900 border border-white/10 rounded-lg p-2.5 text-white text-sm font-mono"
                     value={form.coordenadas || ''} onChange={e => updateForm({ coordenadas: e.target.value })} placeholder="Lat, Lng" />
-                  {ocrVerified['comprobanteDomicilio'] && form.coordenadas && (
+                  {ocrVerified['comprobante'] && form.coordenadas && (
                     <div className="flex items-center gap-1 bg-emerald-500/20 border border-emerald-500/30 rounded-lg px-3 py-2 shrink-0">
                       <Check className="w-3.5 h-3.5 text-emerald-400" />
                       <span className="text-[9px] text-emerald-400 font-bold">Detectado</span>

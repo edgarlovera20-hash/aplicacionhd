@@ -14,8 +14,21 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: postgres://${POSTGRES_USER:-hdreams_user}:${POSTGRES_PASSWORD:-hdreams_pass}@db:5432/${POSTGRES_DB:-hdreams_crm}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # IA: cadena de fallback Claude -> Gemini -> OpenAI
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_TEXT_MODEL: ${CLAUDE_TEXT_MODEL:-claude-sonnet-4-6}
+      CLAUDE_VISION_MODEL: ${CLAUDE_VISION_MODEL:-claude-haiku-4-5}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_KEY_2: ${GEMINI_API_KEY_2:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PASSWORD_SALT: ${PASSWORD_SALT:-hdreams_salt_2026}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-}
+      # Twilio (SMS / WhatsApp / llamadas de validación)
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-}
     depends_on:
       db:
         condition: service_healthy

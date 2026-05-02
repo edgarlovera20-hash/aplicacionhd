@@ -39,8 +39,9 @@ export default function NotificationBell({ role }: Props) {
       const r = await fetch(`/api/notifications?rol=${role || ''}`);
       if (!r.ok) return;
       const data: Notif[] = await r.json();
-      setNotifs(data);
-      setUnreadCount(data.filter(n => !n.leida).length);
+      const safe = Array.isArray(data) ? data : [];
+      setNotifs(safe);
+      setUnreadCount(safe.filter(n => !n.leida).length);
     } catch { /* silent */ }
   }, [role]);
 
