@@ -66,6 +66,8 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
       { id: 'Reclutamiento', label: 'Reclutamiento', icon: Users },
       { id: 'Mensajería',    label: 'Mensajería',    icon: Inbox },
       { id: 'Pipeline',      label: 'Pipeline',      icon: TrendingUp },
+      { id: 'Perfil',                label: 'Perfil',       icon: User },
+      { id: 'Reclutamiento',         label: 'Reclutamiento',icon: Users },
     ];
   } else if (role === 'SUPERVISOR') {
     availableSections = [
@@ -131,6 +133,7 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
         {activeSection === 'Ajustes'       && <Suspense fallback={<SectionLoader />}><SettingsView /></Suspense>}
         {activeSection === 'Mensajería'    && <Suspense fallback={<SectionLoader />}><MessagingHub /></Suspense>}
         {activeSection === 'Pipeline'      && <Suspense fallback={<SectionLoader />}><LeadPipeline /></Suspense>}
+        {activeSection === 'Ajustes' && <Suspense fallback={<SectionLoader />}><SettingsView /></Suspense>}
       </div>
 
       {/* Full Screen Menu Overlay */}

@@ -34,6 +34,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 // ── Validación de entorno crítico (fail-fast en producción) ───────────────────
 if (IS_PROD) {
   const required = ["PASSWORD_SALT", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET"];
+  const required = ["PASSWORD_SALT"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length) {
     console.error(`[FATAL] Faltan variables de entorno requeridas en producción: ${missing.join(", ")}`);
@@ -60,6 +61,10 @@ async function startServer() {
       // TODO: re-habilitar cuando se agregue dominio + certificado SSL.
       contentSecurityPolicy: false,
       strictTransportSecurity: false,
+      // CSP deshabilitado: la app embebe scripts inline (Vite dev) y conecta a
+      // dominios externos (Gemini, OpenAI, Twilio). Si se quiere endurecer, hay
+      // que listar todos los origins permitidos. Por ahora solo otras cabeceras.
+      contentSecurityPolicy: false,
       crossOriginEmbedderPolicy: false,
     })
   );
@@ -103,6 +108,13 @@ async function startServer() {
   const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
   const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
 
+
+  app.use(express.json({ limit: '10mb' }));
+
+  // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
+  const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
+
   const geminiKeys = [
     process.env.GEMINI_API_KEY,
     process.env.GEMINI_API_KEY_2,
@@ -116,6 +128,7 @@ async function startServer() {
   //  - Texto general (chat, resúmenes):    claude-sonnet-4-6 — 1M ctx, adaptive thinking
   const CLAUDE_TEXT_MODEL   = process.env.CLAUDE_TEXT_MODEL   || "claude-sonnet-4-6";
   const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5-20251001";
+  const CLAUDE_VISION_MODEL = process.env.CLAUDE_VISION_MODEL || "claude-haiku-4-5";
 
   const providers: string[] = [];
   if (anthropicClient)        providers.push(`Claude (${CLAUDE_TEXT_MODEL} / ${CLAUDE_VISION_MODEL})`);
@@ -282,6 +295,15 @@ async function startServer() {
         lastErr = err;
         console.warn(`OpenAI fallo (${err?.message?.slice(0, 80)})`);
       }
+    // ── Intento 3: OpenAI (solo texto, sin visión) ────────────────────────
+    if (openaiClient && isText && !visionMode) {
+      console.warn("Usando OpenAI GPT-4o-mini como respaldo final.");
+      const chat = await openaiClient.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: promptOrParts as string }],
+        max_tokens: 2048,
+      });
+      return chat.choices[0]?.message?.content || "";
     }
 
     throw lastErr || new Error("No hay proveedores de IA disponibles.");
@@ -642,6 +664,23 @@ async function startServer() {
     return { accessToken, refreshToken };
   };
 
+
+  /** Emite access + refresh tokens y persiste el hash del refresh en DB */
+  const issueTokenPair = async (uid: string, email: string, role: string) => {
+    const payload = { uid, email, role };
+    const accessToken  = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+    if (isDbConnected) {
+      const tokenHash = hashToken(refreshToken);
+      await pool.query(
+        `INSERT INTO refresh_tokens (user_uid, token_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+        [uid, tokenHash]
+      );
+    }
+    return { accessToken, refreshToken };
+  };
+
   /** Opciones de cookie para el refresh token */
   const refreshCookieOpts = {
     httpOnly: true,
@@ -911,6 +950,43 @@ async function startServer() {
         const list = Array.from(inv.entries()).map(([token, v]) => ({ token, ...v }));
         res.json(list);
       }
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+      audit(sess.uid, sess.email, 'CREATE_INVITATION', 'auth', { email, role });
+      res.status(201).json({ token, email, role, expiresAt: expiresAt.toISOString() });
+    } catch (e: any) {
+      console.error('[invitations]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Listar invitaciones activas (gerente/administracion) ─────────────────
+  app.get("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT id, email, role, nombres, expires_at, used, created_at FROM invitations ORDER BY created_at DESC LIMIT 100"
+        );
+        res.json(rows);
+      } else {
+        const inv = (mockDb as any).__invitations as Map<string, any> | undefined;
+        if (!inv) return res.json([]);
+        const list = Array.from(inv.entries()).map(([token, v]) => ({ token, ...v }));
+        res.json(list);
+      }
+  // ── Revocar invitación ───────────────────────────────────────────────────
+  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const { token } = req.params;
+      if (isDbConnected) {
+        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
+      } else {
+        (mockDb as any).__invitations?.delete(token);
+      }
+      res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ error: 'Error en el servidor' });
     }
@@ -1965,6 +2041,178 @@ Devuelve EXACTAMENTE este JSON sin markdown ni texto adicional:
     if (!token) return res.status(401).send('No autenticado');
     const payload = verifyAccessToken(token);
     if (!payload) return res.status(401).send('Sesión expirada');
+  // ================= EXPEDIENTES (PDFs · Audios · Videos) =================
+  // Estructura física en disco:
+  //   uploads/expedientes/{folio}/
+  //     ├── documentos/   (INE frente/reverso, CURP, comprobante de domicilio)
+  //     ├── audios/       (grabaciones de llamadas de validación)
+  //     └── videos/       (video-firmas)
+  //
+  // Pipeline: el frontend manda base64 vía JSON al endpoint de upload, el server
+  // decodifica y guarda al disco. Devuelve el path relativo. Cuando se finaliza
+  // la venta (POST /api/ventas), se prefiere el path sobre el base64 — los
+  // archivos pesados ya no se duplican dentro del JSON de la venta.
+  const UPLOADS_ROOT = path.join(process.cwd(), 'uploads', 'expedientes');
+  if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+
+  type ExpedienteTipo =
+    | 'ine_frente' | 'ine_reverso' | 'curp' | 'comprobante'
+    | 'audio_validacion' | 'videofirma';
+
+  const TIPO_TO_SUBFOLDER: Record<ExpedienteTipo, string> = {
+    ine_frente:       'documentos',
+    ine_reverso:      'documentos',
+    curp:             'documentos',
+    comprobante:      'documentos',
+    audio_validacion: 'audios',
+    videofirma:       'videos',
+  };
+
+  const mimeToExt = (mt: string): string => {
+    const m = mt.toLowerCase();
+    if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
+    if (m === 'image/png')  return 'png';
+    if (m === 'image/webp') return 'webp';
+    if (m === 'image/gif')  return 'gif';
+    if (m === 'application/pdf') return 'pdf';
+    if (m === 'audio/webm') return 'webm';
+    if (m === 'audio/ogg')  return 'ogg';
+    if (m === 'audio/mpeg' || m === 'audio/mp3') return 'mp3';
+    if (m === 'audio/wav')  return 'wav';
+    if (m === 'video/webm') return 'webm';
+    if (m === 'video/mp4')  return 'mp4';
+    return 'bin';
+  };
+
+  // Sanitiza folio para usarlo como nombre de carpeta (path traversal safe).
+  const safeFolio = (folio: string): string =>
+    String(folio || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+
+  // Body parser dedicado con límite alto solo para uploads de expediente.
+  // (videos webm de 60s pueden pesar 10-30 MB en base64.)
+  const expedienteUploadJson = express.json({ limit: '50mb' });
+
+  // POST /api/expediente/:folio/upload — guarda un archivo en su subcarpeta.
+  // Body: { tipo, base64, mimetype, filename? }
+  app.post('/api/expediente/:folio/upload', expedienteUploadJson, async (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      if (!folio) return res.status(400).json({ error: 'Folio inválido' });
+
+      const { tipo, base64, mimetype, filename } = req.body as {
+        tipo: ExpedienteTipo; base64: string; mimetype: string; filename?: string;
+      };
+      if (!tipo || !base64 || !mimetype) {
+        return res.status(400).json({ error: 'Faltan campos: tipo, base64, mimetype' });
+      }
+      const subfolder = TIPO_TO_SUBFOLDER[tipo];
+      if (!subfolder) {
+        return res.status(400).json({
+          error: `Tipo inválido: ${tipo}. Permitidos: ${Object.keys(TIPO_TO_SUBFOLDER).join(', ')}`
+        });
+      }
+
+      const dir = path.join(UPLOADS_ROOT, folio, subfolder);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+      const ext = mimeToExt(mimetype);
+      // Documentos: nombre estable (ine_frente.jpg) — sobreescribe si recapturan.
+      // Audios/videos: timestamp para conservar histórico de intentos de grabación.
+      const isHistoric = subfolder === 'audios' || subfolder === 'videos';
+      const safeFilename = filename
+        ? filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80)
+        : isHistoric
+          ? `${tipo}_${Date.now()}.${ext}`
+          : `${tipo}.${ext}`;
+      const fullPath = path.join(dir, safeFilename);
+
+      // Decodifica base64 (admite data-URL completa o solo el cuerpo).
+      const cleanB64 = base64.includes(',') ? base64.split(',')[1] : base64;
+      const buf = Buffer.from(cleanB64, 'base64');
+      // Hard cap por archivo: 50 MB (después del decode, no del base64).
+      if (buf.length > 50 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Archivo > 50 MB no permitido' });
+      }
+      fs.writeFileSync(fullPath, buf);
+
+      const relativePath = `/uploads/expedientes/${folio}/${subfolder}/${safeFilename}`;
+
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'subir_archivo_expediente', 'expedientes', {
+        folio, tipo, path: relativePath, size: buf.length, mimetype,
+      });
+
+      res.json({ path: relativePath, size: buf.length, tipo, folio });
+    } catch (e: any) {
+      console.error('Expediente upload error:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/expediente/:folio/files — lista archivos del expediente.
+  app.get('/api/expediente/:folio/files', (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const baseDir = path.join(UPLOADS_ROOT, folio);
+      if (!fs.existsSync(baseDir)) return res.json({ folio, files: [] });
+
+      type FileEntry = {
+        subfolder: string; filename: string; path: string; size: number; mtime: string;
+      };
+      const result: FileEntry[] = [];
+      for (const sub of ['documentos', 'audios', 'videos']) {
+        const subDir = path.join(baseDir, sub);
+        if (!fs.existsSync(subDir)) continue;
+        for (const fname of fs.readdirSync(subDir)) {
+          const full = path.join(subDir, fname);
+          const stat = fs.statSync(full);
+          if (!stat.isFile()) continue;
+          result.push({
+            subfolder: sub,
+            filename: fname,
+            path: `/uploads/expedientes/${folio}/${sub}/${fname}`,
+            size: stat.size,
+            mtime: stat.mtime.toISOString(),
+          });
+        }
+      }
+      res.json({ folio, files: result });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE /api/expediente/:folio/file — elimina un archivo (solo gerente/admin).
+  app.delete('/api/expediente/:folio/file', requireRole('gerente', 'administracion'), (req, res) => {
+    try {
+      const folio = safeFolio(req.params.folio);
+      const { subfolder, filename } = req.body as { subfolder: string; filename: string };
+      if (!subfolder || !filename) return res.status(400).json({ error: 'subfolder y filename requeridos' });
+      // Evita path traversal: subfolder solo puede ser una de las 3 carpetas conocidas.
+      if (!['documentos', 'audios', 'videos'].includes(subfolder)) {
+        return res.status(400).json({ error: 'subfolder inválido' });
+      }
+      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const full = path.join(UPLOADS_ROOT, folio, subfolder, safeName);
+      if (!fs.existsSync(full)) return res.status(404).json({ error: 'Archivo no encontrado' });
+      fs.unlinkSync(full);
+      const sess = peekSession(req);
+      audit(sess.uid, sess.email, 'eliminar_archivo_expediente', 'expedientes',
+        { folio, subfolder, filename: safeName });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Servir archivos estáticos /uploads/expedientes/* — autenticado vía Bearer
+  // header O ?token=... (los <img>/<audio>/<video> no envían Authorization).
+  const expedienteStaticAuth = (req: any, res: any, next: any) => {
+    const token = (req.headers?.authorization || '').replace('Bearer ', '')
+                  || String(req.query?.token || '');
+    if (!token) return res.status(401).send('No autenticado');
+    const sess = sessionStore.get(token);
+    if (!sess || Date.now() > sess.exp) return res.status(401).send('Sesión expirada');
     next();
   };
   app.use('/uploads/expedientes', expedienteStaticAuth, express.static(UPLOADS_ROOT));
@@ -3855,6 +4103,22 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
       status: dbOk ? "ok" : "degraded",
       env: process.env.NODE_ENV || "development",
       db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      env: process.env.NODE_ENV || "development",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
+      ts: new Date().toISOString(),
+    });
+  });
+
+  // Backwards compatibility — Railway usa /health por default según railway.json.
+  app.get("/health", async (_req, res) => {
+    let dbOk = !isDbConnected;
+    if (isDbConnected) {
+      try { await pool.query("SELECT 1"); dbOk = true; } catch { dbOk = false; }
+    }
+    res.status(dbOk ? 200 : 503).json({
+      status: dbOk ? "ok" : "degraded",
+      env: process.env.NODE_ENV || "development",
+      db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
       uptime: Math.round(process.uptime()),
       ts: new Date().toISOString(),
     });
@@ -4787,6 +5051,19 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
     facebookEngine.processEvent(req.body);
     res.sendStatus(200);
   });
+  // Rate-limits — protegen endpoints que invocan IA, OCR o tocan datos críticos.
+  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
+  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
+  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
+  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini
+  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads de expediente (INE, video, audio)
+  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
+  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
+  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
+  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
+  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
+  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
+  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
 
   // ================= VITE MIDDLEWARE (dev) / STATIC (prod) =================
   if (process.env.NODE_ENV !== "production") {
@@ -4929,6 +5206,7 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
       try { await closeQueues(); } catch {}
       try { await disconnectRedis(); } catch {}
       console.log('[SHUTDOWN] HTTP, DB y Redis cerrados. Bye.');
+      console.log('[SHUTDOWN] HTTP y DB cerrados. Bye.');
       process.exit(0);
     });
   };
