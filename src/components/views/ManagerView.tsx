@@ -7,7 +7,7 @@ import {
   User, ClipboardCheck, FileSearch, Wallet, Headphones, AlertTriangle, Megaphone, Loader2,
   FileText, Database, Kanban, Search, MessageCircle,
   BarChart2, X, Shield,
-  Brain,
+  Brain, Inbox, Zap, TrendingUp as PipelineIcon,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -33,6 +33,10 @@ const CustomerFollowup     = lazy(() => import('./CustomerFollowup'));
 const ReportsCenter        = lazy(() => import('./ReportsCenter'));
 const AuditLog             = lazy(() => import('./AuditLog'));
 const AgentsCenter         = lazy(() => import('./AgentsCenter'));
+const MessagingHub         = lazy(() => import('./MessagingHub'));
+const AutomationStudio     = lazy(() => import('./AutomationStudio'));
+const AnalyticsDashboard   = lazy(() => import('./AnalyticsDashboard'));
+const LeadPipeline         = lazy(() => import('../crm/LeadPipeline'));
 
 import NotificationBell from '../ui/NotificationBell';
 import ErrorBoundary    from '../ui/ErrorBoundary';
@@ -195,7 +199,11 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
               <NavItem icon={MessageCircle} label="Seguimiento WA" active={activeSection === 'Seguimiento Clientes'} onClick={() => setActiveSection('Seguimiento Clientes')} highlight collapsed={sidebarCollapsed} />
               <NavItem icon={AlertTriangle} label="Morosidad" active={activeSection === 'Morosidad'} onClick={() => setActiveSection('Morosidad')} collapsed={sidebarCollapsed} />
               <NavItem icon={Database} label="Analytics" active={activeSection === 'Analytics'} onClick={() => setActiveSection('Analytics')} collapsed={sidebarCollapsed} />
+              <NavItem icon={BarChart2} label="Analytics Pro" active={activeSection === 'Analytics Pro'} onClick={() => setActiveSection('Analytics Pro')} collapsed={sidebarCollapsed} />
               <NavItem icon={Kanban} label="CRM Interactivo" active={activeSection === 'CRM Interactivo'} onClick={() => setActiveSection('CRM Interactivo')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Inbox} label="Mensajería Hub" active={activeSection === 'Mensajería'} onClick={() => setActiveSection('Mensajería')} highlight collapsed={sidebarCollapsed} />
+              <NavItem icon={PipelineIcon} label="Pipeline Leads" active={activeSection === 'Pipeline'} onClick={() => setActiveSection('Pipeline')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Zap} label="Automatizaciones" active={activeSection === 'Automatizaciones'} onClick={() => setActiveSection('Automatizaciones')} collapsed={sidebarCollapsed} />
             </div>
           )}
 
@@ -608,12 +616,16 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
           {activeSection === 'Morosidad' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Morosidad"><SupportCRM initialFilter="MOROSO" /></ErrorBoundary></Suspense>}
           {activeSection === 'Reclutamiento' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Reclutamiento"><TalentCRM /></ErrorBoundary></Suspense>}
           {activeSection === 'Analytics' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Analytics"><InfoAppCharts /></ErrorBoundary></Suspense>}
+          {activeSection === 'Analytics Pro' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Analytics Pro"><AnalyticsDashboard /></ErrorBoundary></Suspense>}
+          {activeSection === 'Mensajería' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Mensajería Hub"><MessagingHub /></ErrorBoundary></Suspense>}
+          {activeSection === 'Pipeline' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Pipeline Leads"><LeadPipeline /></ErrorBoundary></Suspense>}
+          {activeSection === 'Automatizaciones' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Automatizaciones"><AutomationStudio /></ErrorBoundary></Suspense>}
           {activeSection === 'CRM Interactivo' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="CRM Interactivo"><InteractiveCRM /></ErrorBoundary></Suspense>}
           {activeSection === 'Reportes' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Reportes"><ReportsCenter /></ErrorBoundary></Suspense>}
           {activeSection === 'Audit Log' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Audit Log"><AuditLog /></ErrorBoundary></Suspense>}
           {activeSection === 'Agentes IA' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Centro de Agentes IA"><AgentsCenter /></ErrorBoundary></Suspense>}
 
-          {!['Dashboard', 'Ajustes', 'Perfil', 'Nóminas', 'Captura y Validación', 'Consulta y Seguimiento', 'Sales CRM', 'Soporte a Clientes', 'Morosidad', 'Reclutamiento', 'Anuncios', 'Analytics', 'CRM Interactivo', 'Seguimiento Clientes', 'Reportes', 'Audit Log', 'Agentes IA'].includes(activeSection) && (
+          {!['Dashboard', 'Ajustes', 'Perfil', 'Nóminas', 'Captura y Validación', 'Consulta y Seguimiento', 'Sales CRM', 'Soporte a Clientes', 'Morosidad', 'Reclutamiento', 'Anuncios', 'Analytics', 'Analytics Pro', 'CRM Interactivo', 'Seguimiento Clientes', 'Reportes', 'Audit Log', 'Agentes IA', 'Mensajería', 'Pipeline', 'Automatizaciones'].includes(activeSection) && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-slate-400">
                 <h2 className="text-2xl font-bold text-white mb-2">{activeSection}</h2>
