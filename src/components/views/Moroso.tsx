@@ -1,41 +1,97 @@
 import { api } from '../../api';
-import { useState, useEffect, useMemo } from 'react';
-import { AlertTriangle, Search, X, Filter, Phone, DollarSign, Calendar, Bot, Loader2, Send } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { AlertTriangle, Search, X, Filter, Phone, DollarSign, Calendar, Bot, Loader2, Send, Download, Upload } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { CustomerData, EventType, aiAgent } from '../../services/aiAgent';
 
-interface Moroso {
+interface MorosoRecord {
     id: string;
-    cliente: string;
-    telefono: string;
-    deuda: number;
-    diasAtraso: number;
-    estado: string;
-    paquete: string;
-    promotor: string;
+    fechaCaptura: string;
+    folioSiac: string;
+    nombreCliente1: string;
+    telefonoTelmex: string;
+    tienda: string;
+    nombreCliente2: string;
+    direccion1: string;
+    direccion2: string;
+    direccion3: string;
+    entreCalle1: string;
+    entreCalle2: string;
+    telefonoTitular: string;
+    telefonoReferencia: string;
+    area: string;
+    fechaConex: string;
+    subdireccion: string;
+    pago: string;
+    ciudad: string;
+    primSem: string;
+    segunSem: string;
+    bajaPrevia: string;
+    folioProm: string;
+    saldoTotal: string;
+    saldoTelecom: string;
+    saldoTercero: string;
+    saldoVenfin: string;
+    usuario: string;
+    nombrePromotor: string;
+
+    // Campos originales para la UI
+    deuda?: number;
+    diasAtraso?: number;
+    estado?: string;
+    paquete?: string;
 }
 
 export default function Morosidad() {
-    const [morosos, setMorosos] = useState<Moroso[]>([]);
+    const [morosos, setMorosos] = useState<MorosoRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [estado, setEstado] = useState('');
     const [promotor, setPromotor] = useState('');
+    
+    // Import state
+    const [isImporting, setIsImporting] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         api.get('/ventas').then((data: any[]) => {
-            // Mocking debtors from ventas for now
-            const mockMorosos = data.slice(0, 5).map((d, i) => ({
-                id: d.folio || `M-${i}`,
-                cliente: d.nombres || d.cliente || 'Desconocido',
-                telefono: d.telefonoTitular || d.telefono || '0000000000',
+            const formatted = data.map((d, i) => ({
+                id: d.idImportado || d.id || `M-${i}`,
+                fechaCaptura: d.fechaCaptura || d.fechaSolicitud || d.created_at || '',
+                folioSiac: d.folioSiac || d.folio || '',
+                nombreCliente1: d.nombres || d.cliente || 'Desconocido',
+                telefonoTelmex: d.telefonoTelmex || '',
+                tienda: d.tienda || '',
+                nombreCliente2: d.nombres || d.cliente || 'Desconocido',
+                direccion1: d.direccion1 || d.calle || '',
+                direccion2: d.direccion2 || d.colonia || '',
+                direccion3: d.direccion3 || '',
+                entreCalle1: d.entreCalle1 || d.entrecalle1 || '',
+                entreCalle2: d.entreCalle2 || d.entrecalle2 || '',
+                telefonoTitular: d.telefonoTitular || d.telefono || '0000000000',
+                telefonoReferencia: d.telefonoReferencia || '',
+                area: d.area || '',
+                fechaConex: d.fechaConex || '',
+                subdireccion: d.subdireccion || '',
+                pago: d.pago || '',
+                ciudad: d.ciudad || d.municipio || '',
+                primSem: d.primSem || '',
+                segunSem: d.segunSem || '',
+                bajaPrevia: d.bajaPrevia || '',
+                folioProm: d.folioProm || '',
+                saldoTotal: d.saldoTotal || d.rentaMensual || '500',
+                saldoTelecom: d.saldoTelecom || '',
+                saldoTercero: d.saldoTercero || '',
+                saldoVenfin: d.saldoVenfin || '',
+                usuario: d.usuario || d.promotorId || '',
+                nombrePromotor: d.promotorNombre || d.nombrePromotor || 'Sistema',
+
                 deuda: d.rentaMensual ? Number(d.rentaMensual) : 500,
                 diasAtraso: Math.floor(Math.random() * 30) + 1,
-                estado: 'Sin contactar',
-                paquete: d.paqueteNombre || 'N/A',
-                promotor: d.promotorNombre || 'Sistema'
+                estado: d.estadoMoroso || 'Sin contactar',
+                paquete: d.paqueteNombre || 'N/A'
             }));
-      setMorosos(mockMorosos);
+      setMorosos(formatted);
       setLoading(false);
     }).catch(() => {
       setMorosos([]);
@@ -50,7 +106,7 @@ export default function Morosidad() {
   });
 
   const promotores = useMemo(() => {
-    const unique = Array.from(new Set(morosos.map(m => m.promotor)));
+    const unique = Array.from(new Set(morosos.map(m => m.nombrePromotor)));
     return unique.sort();
   }, [morosos]);
 
@@ -58,7 +114,7 @@ export default function Morosidad() {
   const itemsPerPage = 10;
 
   // AI Chat State
-  const [selectedClient, setSelectedClient] = useState<Moroso | null>(null);
+  const [selectedClient, setSelectedClient] = useState<MorosoRecord | null>(null);
   const [chatMessage, setChatMessage] = useState('');
   const [chatHistory, setChatHistory] = useState<{role: 'user' | 'ai', content: string}[]>([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -83,9 +139,9 @@ export default function Morosidad() {
   const filteredData = useMemo(() => {
     return morosos.filter(item => {
       const { search: q, estado: e, promotor: p } = appliedFilters;
-      const matchGlobal = item.id.toLowerCase().includes(q) || item.cliente.toLowerCase().includes(q) || item.telefono.includes(q);
+      const matchGlobal = item.id.toLowerCase().includes(q) || item.nombreCliente1.toLowerCase().includes(q) || item.telefonoTitular.includes(q);
       const matchEstado = e === "" || item.estado === e;
-      const matchPromotor = p === "" || item.promotor === p;
+      const matchPromotor = p === "" || item.nombrePromotor === p;
       return matchGlobal && matchEstado && matchPromotor;
     });
   }, [appliedFilters, morosos]);
@@ -107,7 +163,7 @@ export default function Morosidad() {
     }
   };
 
-  const openAiChat = (client: Moroso) => {
+  const openAiChat = (client: MorosoRecord) => {
     setSelectedClient(client);
     setChatHistory([]);
     setChatMessage('');
@@ -128,11 +184,11 @@ export default function Morosidad() {
     setIsAiLoading(true);
 
     const customerData: CustomerData = {
-      nombre: selectedClient.cliente,
-      deuda: selectedClient.deuda,
-      diasAtraso: selectedClient.diasAtraso,
+      nombre: selectedClient.nombreCliente1,
+      deuda: selectedClient.deuda || 0,
+      diasAtraso: selectedClient.diasAtraso || 0,
       esNuevo: false,
-      telefono: selectedClient.telefono
+      telefono: selectedClient.telefonoTitular
     };
 
     // Para la sección de morosidad, el evento principal siempre es COBRANZA_MOROSO
@@ -142,6 +198,110 @@ export default function Morosidad() {
     
     setChatHistory(prev => [...prev, { role: 'ai', content: response }]);
     setIsAiLoading(false);
+  };
+
+  // Import / Export CSV
+  const exportToExcel = () => {
+    const headers = [
+      'ID', 'FECHA DE CAPTURA', 'FOLIO SIAC', 'NOMBRE DEL CLIENTE', 'TELEFONO TELMEX', 
+      'TIENDA', 'NOMBRE DEL CLIENTE', 'DIRECCION_1', 'DIRECCION_2', 'DIRECCION_3', 
+      'ENTRE_CALLE1', 'ENTRE_CALLE2', 'TELEFONO DE TITULAR', 'TELEFONO DE REFERENCIA', 
+      'AREA', 'FECHA_CONEX', 'SUBDIRECCION', 'PAGO', 'CIUDAD', 'PRIM_SEM', 'SEGUN_SEM', 
+      'BAJA_PREVIA', 'FOLIOPROM', 'SALDO_TOTAL', 'SALDO_TELECOM', 'SALDO_TERCERO', 
+      'SALDO_VENFIN', 'USUARIO', 'NOMBRE DE PROMOTOR'
+    ];
+    
+    const rows = filteredData.map(item => [
+      item.id, item.fechaCaptura, item.folioSiac, item.nombreCliente1, item.telefonoTelmex,
+      item.tienda, item.nombreCliente2, item.direccion1, item.direccion2, item.direccion3,
+      item.entreCalle1, item.entreCalle2, item.telefonoTitular, item.telefonoReferencia,
+      item.area, item.fechaConex, item.subdireccion, item.pago, item.ciudad, item.primSem,
+      item.segunSem, item.bajaPrevia, item.folioProm, item.saldoTotal, item.saldoTelecom,
+      item.saldoTercero, item.saldoVenfin, item.usuario, item.nombrePromotor
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + headers.join(",") + "\n"
+      + rows.map(e => e.join(",")).join("\n");
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Clientes_Morosos_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const importFromCSV = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    try {
+      const text = await file.text();
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      
+      let successCount = 0;
+      // Skip header, process rows
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',');
+        if (cols.length < 29) continue;
+        
+        const id = cols[0];
+        if (!id) continue;
+        
+        const record = {
+          idImportado: cols[0] || '',
+          fechaCaptura: cols[1] || '',
+          folioSiac: cols[2] || '',
+          nombres: cols[3] || '',
+          telefonoTelmex: cols[4] || '',
+          tienda: cols[5] || '',
+          // cols[6] is duplicated name, skip for backend
+          direccion1: cols[7] || '',
+          direccion2: cols[8] || '',
+          direccion3: cols[9] || '',
+          entreCalle1: cols[10] || '',
+          entreCalle2: cols[11] || '',
+          telefonoTitular: cols[12] || '',
+          telefonoReferencia: cols[13] || '',
+          area: cols[14] || '',
+          fechaConex: cols[15] || '',
+          subdireccion: cols[16] || '',
+          pago: cols[17] || '',
+          ciudad: cols[18] || '',
+          primSem: cols[19] || '',
+          segunSem: cols[20] || '',
+          bajaPrevia: cols[21] || '',
+          folioProm: cols[22] || '',
+          saldoTotal: cols[23] || '',
+          saldoTelecom: cols[24] || '',
+          saldoTercero: cols[25] || '',
+          saldoVenfin: cols[26] || '',
+          usuario: cols[27] || '',
+          nombrePromotor: cols[28] || '',
+          
+          estadoMoroso: 'Sin contactar',
+          createdAt: new Date().toISOString()
+        };
+
+        try {
+          await api.post('/ventas', record);
+          successCount++;
+        } catch (err) {
+          console.error(`Error importando ID ${id}`, err);
+        }
+      }
+      alert(`¡Importación completada con éxito!\nSe añadieron ${successCount} registros de morosos.`);
+      window.location.reload();
+    } catch (error) {
+      console.error(error);
+      alert('Hubo un error al leer o importar el archivo CSV.');
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   return (
@@ -214,6 +374,30 @@ export default function Morosidad() {
             <X className="w-4 h-4" />
             Limpiar Filtros
           </button>
+          
+          <input
+            type="file"
+            accept=".csv"
+            ref={fileInputRef}
+            onChange={importFromCSV}
+            className="hidden"
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isImporting}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 text-sm font-medium rounded-xl transition-colors border border-purple-500/20 disabled:opacity-50"
+          >
+            {isImporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            {isImporting ? 'Importando...' : 'Importar CSV'}
+          </button>
+          <button
+            onClick={exportToExcel}
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-sm font-medium rounded-xl transition-colors border border-emerald-500/20"
+          >
+            <Download className="w-4 h-4" />
+            Exportar Excel
+          </button>
+
           <button 
             onClick={handleFilter}
             className="flex items-center gap-2 px-6 py-2 bg-red-600/80 hover:bg-red-500 text-white text-sm font-medium rounded-xl transition-colors shadow-lg shadow-red-500/20"
@@ -249,23 +433,23 @@ export default function Morosidad() {
                     className="hover:bg-red-500/10 transition-colors group"
                   >
                     <td className="p-4 text-sm font-medium text-slate-400 whitespace-nowrap">{item.id}</td>
-                    <td className="p-4 text-sm text-slate-200 font-medium whitespace-nowrap">{item.cliente}</td>
+                    <td className="p-4 text-sm text-slate-200 font-medium whitespace-nowrap">{item.nombreCliente1}</td>
                     <td className="p-4 text-sm text-slate-300 whitespace-nowrap flex items-center gap-2">
                       <Phone className="w-3 h-3 text-slate-500" />
-                      {item.telefono}
+                      {item.telefonoTitular}
                     </td>
                     <td className="p-4 text-sm text-slate-400 whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <div className="w-6 h-6 rounded-full bg-slate-800 flex items-center justify-center text-[10px] font-bold text-blue-400 border border-blue-500/20">
-                          {item.promotor.charAt(0)}
+                          {item.nombrePromotor.charAt(0)}
                         </div>
-                        {item.promotor}
+                        {item.nombrePromotor}
                       </div>
                     </td>
                     <td className="p-4 text-sm text-slate-400 whitespace-nowrap">{item.paquete}</td>
                     <td className="p-4 text-sm font-bold text-red-400 whitespace-nowrap flex items-center">
                       <DollarSign className="w-4 h-4" />
-                      {item.deuda.toLocaleString('es-MX')}
+                      {item.saldoTotal}
                     </td>
                     <td className="p-4 text-sm text-amber-400 font-medium whitespace-nowrap flex items-center gap-1.5">
                       <Calendar className="w-4 h-4" />
@@ -309,38 +493,55 @@ export default function Morosidad() {
 
       {/* Pagination Controls */}
       {totalPages > 1 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-900/40 backdrop-blur-md border border-white/10 rounded-2xl p-4 shadow-xl">
-          <p className="text-sm text-slate-400">
-            Mostrando <span className="font-medium text-white">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-medium text-white">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> de <span className="font-medium text-white">{filteredData.length}</span> registros
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-6 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl p-5 shadow-2xl">
+          <p className="text-sm text-slate-400 whitespace-nowrap order-2 lg:order-1">
+            Mostrando <span className="font-black text-white">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-black text-white">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> de <span className="font-black text-white">{filteredData.length}</span> registros
           </p>
-          <div className="flex items-center gap-2">
+          
+          <div className="flex items-center gap-3 order-1 lg:order-2 overflow-x-auto pb-2 lg:pb-0 max-w-full custom-scrollbar">
             <button 
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-white/5"
             >
               Anterior
             </button>
-            <div className="flex items-center gap-1">
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                <button
-                  key={page}
-                  onClick={() => setCurrentPage(page)}
-                  className={cn(
-                    "w-8 h-8 rounded-lg text-sm font-medium transition-colors flex items-center justify-center",
-                    currentPage === page 
-                      ? "bg-red-600 text-white" 
-                      : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                  )}
-                >
-                  {page}
-                </button>
-              ))}
+            
+            <div className="flex items-center gap-1.5">
+              {(() => {
+                const pages = [];
+                const delta = 2;
+                const left = currentPage - delta;
+                const right = currentPage + delta;
+                
+                for (let i = 1; i <= totalPages; i++) {
+                  if (i === 1 || i === totalPages || (i >= left && i <= right)) {
+                    pages.push(
+                      <button
+                        key={i}
+                        onClick={() => setCurrentPage(i)}
+                        className={cn(
+                          "w-10 h-10 rounded-xl text-xs font-bold transition-all flex items-center justify-center border",
+                          currentPage === i 
+                            ? "bg-red-600 text-white border-red-500 shadow-lg shadow-red-500/20 scale-110" 
+                            : "bg-slate-800/50 text-slate-400 border-white/5 hover:bg-slate-700 hover:text-white"
+                        )}
+                      >
+                        {i}
+                      </button>
+                    );
+                  } else if (i === left - 1 || i === right + 1) {
+                    pages.push(<span key={i} className="text-slate-600 px-1">...</span>);
+                  }
+                }
+                return pages;
+              })()}
             </div>
+
             <button 
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-white/5"
             >
               Siguiente
             </button>
@@ -360,7 +561,7 @@ export default function Morosidad() {
                 </div>
                 <div>
                   <h3 className="text-white font-bold text-sm">Agente de Cobranza IA</h3>
-                  <p className="text-xs text-slate-400">Cliente: {selectedClient.cliente} | Deuda: ${selectedClient.deuda}</p>
+                  <p className="text-xs text-slate-400">Cliente: {selectedClient.nombreCliente1} | Deuda: ${selectedClient.saldoTotal}</p>
                 </div>
               </div>
               <button onClick={closeAiChat} className="p-2 text-slate-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors">

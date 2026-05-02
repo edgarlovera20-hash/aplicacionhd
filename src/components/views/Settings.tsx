@@ -8,12 +8,12 @@ import {
   XCircle, Loader2, CloudUpload, Send, Database, Layers,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { api } from '../../api';
+import { api, getAccessToken } from '../../api';
 
 /* ─────────────────────────────────────────────
    TIPOS
 ───────────────────────────────────────────── */
-type Tab = 'usuarios' | 'gastos' | 'columnas' | 'kpis' | 'bot' | 'canales' | 'import_export' | 'ia';
+type Tab = 'usuarios' | 'gastos' | 'columnas' | 'kpis' | 'bot' | 'canales' | 'import_export' | 'ia' | 'paquetes';
 
 interface AdminUser {
   uid: string;
@@ -32,6 +32,9 @@ interface Expense {
   fecha: string;
   responsable: string;
   notas?: string;
+  tipo?: 'unico' | 'recurrente';
+  diaPago?: number | null;
+  estado?: 'pendiente' | 'pagado';
 }
 
 const ROLES = ['gerente', 'administracion', 'supervisor', 'vendedor', 'reclutadora', 'seguimiento'];
@@ -62,6 +65,7 @@ export default function Settings() {
   const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
     { id: 'usuarios',     label: 'Usuarios',       icon: Users },
     { id: 'gastos',       label: 'Gastos',          icon: DollarSign },
+    { id: 'paquetes',     label: 'Paquetes',        icon: Tag },
     { id: 'columnas',     label: 'Columnas',        icon: CheckSquare },
     { id: 'kpis',         label: 'KPIs',            icon: BarChart2 },
     { id: 'bot',          label: 'Bot',             icon: Bot },
@@ -100,6 +104,7 @@ export default function Settings() {
       <div className="bg-zinc-900/40 backdrop-blur-md border border-white/5 rounded-2xl p-6 min-h-[520px] shadow-xl">
         {activeTab === 'usuarios'      && <UsuariosTab />}
         {activeTab === 'gastos'        && <GastosTab />}
+        {activeTab === 'paquetes'      && <PaquetesTab />}
         {activeTab === 'columnas'      && <ColumnasTab />}
         {activeTab === 'kpis'          && <KPIsTab />}
         {activeTab === 'bot'           && <BotTab />}
@@ -566,6 +571,32 @@ function GastosTab() {
         </div>
       )}
 
+      {/* Widget Próximos Pagos */}
+      {filtered.filter(e => e.estado === 'pendiente').length > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
+          <p className="text-xs uppercase tracking-widest font-bold text-amber-500 mb-3 flex items-center gap-2">
+            <Clock className="w-4 h-4" /> Próximos Pagos Pendientes
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {filtered
+              .filter(e => e.estado === 'pendiente')
+              .map(e => (
+                <div key={e.id} className="bg-zinc-950/50 border border-amber-500/10 rounded-lg p-3 flex justify-between items-center">
+                  <div>
+                    <p className="text-sm font-semibold text-zinc-100">{e.concepto}</p>
+                    <p className="text-[10px] text-zinc-500">
+                      {e.tipo === 'recurrente' ? `Día ${e.diaPago} de cada mes` : `Vence: ${e.fecha}`}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-mono font-bold text-amber-400">${e.monto.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
       {/* KPI bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="bg-zinc-950/50 border border-white/5 rounded-xl px-4 py-3 col-span-2 md:col-span-1">
@@ -634,8 +665,8 @@ function GastosTab() {
           <table className="w-full text-sm text-left">
             <thead className="bg-zinc-950/60">
               <tr>
-                {['Concepto', 'Categoría', 'Monto', 'Fecha', 'Responsable', 'Acciones'].map(h => (
-                  <th key={h} className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{h}</th>
+                {['Concepto', 'Categoría', 'Monto', 'Fecha', 'Tipo', 'Día', 'Estado', 'Resp', 'Acciones'].map(h => (
+                  <th key={h} className="px-3 py-3 text-[10px] font-bold uppercase tracking-wider text-zinc-500">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -645,20 +676,43 @@ function GastosTab() {
               )}
               {filtered.map(e => (
                 <tr key={e.id} className="hover:bg-zinc-800/30 transition-colors">
-                  <td className="px-4 py-3 text-zinc-100 font-medium">
+                  <td className="px-3 py-3 text-zinc-100 font-medium">
                     {e.concepto}
-                    {e.notas && <p className="text-[11px] text-zinc-500 mt-0.5">{e.notas}</p>}
+                    {e.notas && <p className="text-[11px] text-zinc-500 mt-0.5 truncate max-w-[150px]" title={e.notas}>{e.notas}</p>}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{e.categoria}</span>
                   </td>
-                  <td className="px-4 py-3 font-mono font-bold text-white">${e.monto.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-4 py-3 text-zinc-400 text-xs font-mono">{e.fecha}</td>
-                  <td className="px-4 py-3 text-zinc-400 text-xs">{e.responsable}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 font-mono font-bold text-white">${e.monto.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</td>
+                  <td className="px-3 py-3 text-zinc-400 text-xs font-mono">{e.fecha}</td>
+                  <td className="px-3 py-3">
+                    <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold border", 
+                      e.tipo === 'recurrente' ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-slate-500/10 text-slate-300 border-slate-500/20'
+                    )}>{e.tipo === 'recurrente' ? 'Recurrente' : 'Único'}</span>
+                  </td>
+                  <td className="px-3 py-3 text-zinc-400 text-xs font-mono">{e.tipo === 'recurrente' ? e.diaPago : '-'}</td>
+                  <td className="px-3 py-3">
+                    <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold border", 
+                      e.estado === 'pagado' ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                    )}>{e.estado === 'pagado' ? 'Pagado' : 'Pendiente'}</span>
+                  </td>
+                  <td className="px-3 py-3 text-zinc-400 text-xs">{e.responsable}</td>
+                  <td className="px-3 py-3">
                     <div className="flex gap-1">
-                      <button onClick={() => { setEditing(e); setShowModal(true); }} className="p-1.5 text-zinc-400 hover:text-indigo-400 rounded-lg hover:bg-indigo-500/10 transition-colors"><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => delExpense(e.id)} className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                      {e.estado !== 'pagado' && (
+                        <button onClick={async () => {
+                          const r = await fetch(`/api/admin/expenses/${e.id}`, {
+                            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estado: 'pagado' })
+                          });
+                          if(r.ok) {
+                            const updated = await r.json();
+                            setExpenses(prev => prev.map(x => x.id === e.id ? updated : x));
+                            notify('Marcado como pagado');
+                          }
+                        }} className="p-1.5 text-zinc-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors" title="Marcar Pagado"><CheckCircle2 className="w-3.5 h-3.5" /></button>
+                      )}
+                      <button onClick={() => { setEditing(e); setShowModal(true); }} className="p-1.5 text-zinc-400 hover:text-indigo-400 rounded-lg hover:bg-indigo-500/10 transition-colors" title="Editar"><Edit2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => delExpense(e.id)} className="p-1.5 text-zinc-400 hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
                   </td>
                 </tr>
@@ -693,6 +747,9 @@ function ExpenseModal({ expense, onClose, onSaved }: { expense: Expense | null; 
     fecha:       expense?.fecha       || today,
     responsable: expense?.responsable || '',
     notas:       expense?.notas       || '',
+    tipo:        expense?.tipo        || 'unico',
+    diaPago:     expense?.diaPago?.toString() || '',
+    estado:      expense?.estado      || 'pendiente',
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr]       = useState('');
@@ -740,8 +797,26 @@ function ExpenseModal({ expense, onClose, onSaved }: { expense: Expense | null; 
               {EXPENSE_CATS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </Field>
-          <Field label="Fecha">
-            <input type="date" value={form.fecha} onChange={e => handle('fecha', e.target.value)} className={inputCls} />
+          <Field label="Tipo">
+            <select value={form.tipo} onChange={e => handle('tipo', e.target.value)} className={inputCls}>
+              <option value="unico">Pago Único</option>
+              <option value="recurrente">Recurrente</option>
+            </select>
+          </Field>
+          {form.tipo === 'recurrente' ? (
+            <Field label="Día del mes (1-31)">
+              <input type="number" min="1" max="31" value={form.diaPago} onChange={e => handle('diaPago', e.target.value)} className={inputCls} placeholder="Ej. 15" />
+            </Field>
+          ) : (
+            <Field label="Fecha">
+              <input type="date" value={form.fecha} onChange={e => handle('fecha', e.target.value)} className={inputCls} />
+            </Field>
+          )}
+          <Field label="Estado">
+            <select value={form.estado} onChange={e => handle('estado', e.target.value)} className={inputCls}>
+              <option value="pendiente">Pendiente</option>
+              <option value="pagado">Pagado</option>
+            </select>
           </Field>
           <Field label="Responsable">
             <input value={form.responsable} onChange={e => handle('responsable', e.target.value)} placeholder="Nombre" className={inputCls} />
@@ -785,7 +860,7 @@ const ALL_COLUMNS = [
 ];
 
 const getToken = () => {
-  try { return JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || ''; }
+  try { return getAccessToken() || ''; }
   catch { return ''; }
 };
 const authHdr  = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` });
@@ -3052,6 +3127,236 @@ function Field({ label, children, className }: { label: string; children: React.
     <div className={className}>
       <label className="block text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-1">{label}</label>
       {children}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   TAB — GESTIÓN DE PAQUETES
+═══════════════════════════════════════════ */
+function PaquetesTab() {
+  const [packages, setPackages] = useState<any[]>([]);
+  const [platforms, setPlatforms] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [editingPlatform, setEditingPlatform] = useState<any | null>(null);
+
+  const loadPackages = async () => {
+    setLoading(true);
+    try {
+      const data = await api.get('/admin/packages');
+      if (Array.isArray(data)) setPackages(data);
+      
+      const plats = await api.get('/admin/platforms');
+      if (Array.isArray(plats)) setPlatforms(plats);
+      else setPlatforms([
+        { id: 'disney', name: 'Disney+', price: 179 },
+        { id: 'prime', name: 'Prime Video', price: 99 },
+        { id: 'netflix_ads', name: 'Netflix 2 Pantallas (con anuncios)', price: 99 },
+        { id: 'netflix_hd', name: 'Netflix 2 Pantallas HD', price: 219 },
+        { id: 'netflix_4k', name: 'Netflix 4 Pantallas 4K', price: 299 },
+        { id: 'hbo_max_full', name: 'HBO Max Full Access', price: 179 },
+      ]);
+    } catch (e) {
+      console.error(e);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { loadPackages(); }, []);
+  
+  const saveAllPlatforms = async (newPlats: any[]) => {
+    try {
+      await api.post('/admin/platforms', newPlats);
+      setPlatforms(newPlats);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSavePlatform = () => {
+    if (!editingPlatform) return;
+    let next: any[];
+    if (platforms.find(p => p.id === editingPlatform.id)) {
+      next = platforms.map(p => p.id === editingPlatform.id ? editingPlatform : p);
+    } else {
+      next = [...platforms, editingPlatform];
+    }
+    saveAllPlatforms(next);
+    setEditingPlatform(null);
+  };
+
+  const handleDeletePlatform = (id: string) => {
+    if (!confirm('¿Seguro que quieres eliminar esta plataforma?')) return;
+    saveAllPlatforms(platforms.filter(p => p.id !== id));
+  };
+
+  const saveAll = async (newPackages: any[]) => {
+    try {
+      await api.post('/admin/packages', newPackages);
+      setPackages(newPackages);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSave = () => {
+    if (!editing) return;
+    let next: any[];
+    if (packages.find(p => p.id === editing.id)) {
+      next = packages.map(p => p.id === editing.id ? editing : p);
+    } else {
+      next = [...packages, editing];
+    }
+    saveAll(next);
+    setEditing(null);
+  };
+
+  const handleDelete = (id: string) => {
+    if (!confirm('¿Seguro que quieres eliminar este paquete?')) return;
+    saveAll(packages.filter(p => p.id !== id));
+  };
+
+  if (loading) return <div className="p-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-500" /></div>;
+
+  return (
+    <div className="space-y-6 animate-in fade-in zoom-in-95">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-xl font-bold text-white flex items-center gap-2"><Tag className="w-5 h-5 text-indigo-400" /> Catálogo de Paquetes</h2>
+          <p className="text-xs text-slate-400">Actualiza precios y velocidades para que los vendedores siempre tengan la oferta al día.</p>
+        </div>
+        <button
+          onClick={() => setEditing({ id: 'NEW_' + Date.now(), segment: 'residencial', category: 'infinitum_puro', allowedClientTypes: ['linea_nueva'], displayName: 'Nuevo Paquete', price: 0, internetMbps: 0, includesClaroVideo: false })}
+          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" /> Nuevo Paquete
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3">
+        {packages.map(p => (
+          <div key={p.id} className="bg-slate-900/50 border border-white/5 rounded-xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+              <p className="text-sm font-bold text-white">{p.displayName}</p>
+              <p className="text-xs text-slate-400 mt-1">{p.segment.toUpperCase()} · {p.category.replace('_', ' ').toUpperCase()} · {p.internetMbps} Mbps</p>
+            </div>
+            <div className="flex items-center gap-4">
+              <p className="text-lg font-black text-indigo-400">${p.price}</p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setEditing(p)} className="p-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-lg"><Edit2 className="w-4 h-4" /></button>
+                <button onClick={() => handleDelete(p.id)} className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── SECCIÓN PLATAFORMAS ── */}
+      <div className="border-t border-white/5 pt-10 space-y-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-bold text-white flex items-center gap-2"><Smartphone className="w-5 h-5 text-emerald-400" /> Plataformas de Streaming</h2>
+            <p className="text-xs text-slate-400">Configura los precios de los servicios adicionales como Disney+, Prime Video y Netflix.</p>
+          </div>
+          <button
+            onClick={() => setEditingPlatform({ id: 'PLAT_' + Date.now(), name: 'Nueva Plataforma', price: 0 })}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" /> Nueva Plataforma
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {platforms.map(plat => (
+            <div key={plat.id} className="bg-zinc-950/40 border border-white/5 rounded-2xl p-4 flex justify-between items-center group hover:border-emerald-500/30 transition-all">
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+                  <Zap className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-white">{plat.name}</p>
+                  <p className="text-[10px] text-emerald-400 font-black uppercase mt-0.5">${plat.price} / MES</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={() => setEditingPlatform(plat)} className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-lg"><Edit2 className="w-4 h-4" /></button>
+                <button onClick={() => handleDeletePlatform(plat.id)} className="p-2 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
+            <div className="p-5 border-b border-white/5 flex justify-between items-center bg-slate-800/50">
+              <h3 className="text-sm font-bold text-white">Editar Paquete</h3>
+              <button onClick={() => setEditing(null)} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Nombre del Paquete</label>
+                <input type="text" value={editing.displayName} onChange={e => setEditing({...editing, displayName: e.target.value})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Precio ($)</label>
+                  <input type="number" value={editing.price} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Velocidad (Mbps)</label>
+                  <input type="number" value={editing.internetMbps} onChange={e => setEditing({...editing, internetMbps: Number(e.target.value)})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Segmento</label>
+                  <select value={editing.segment} onChange={e => setEditing({...editing, segment: e.target.value})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    <option value="residencial">Residencial</option>
+                    <option value="negocio">Negocio</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Categoría</label>
+                  <select value={editing.category} onChange={e => setEditing({...editing, category: e.target.value})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500">
+                    <option value="infinitum_puro">Infinitum Puro</option>
+                    <option value="doble_play">Doble Play</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="p-5 border-t border-white/5 bg-slate-800/50 flex justify-end gap-3">
+              <button onClick={() => setEditing(null)} className="px-5 py-2.5 rounded-xl text-xs font-bold text-slate-300 hover:bg-white/5">Cancelar</button>
+              <button onClick={handleSave} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-500/20">Guardar Cambios</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingPlatform && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">
+            <div className="p-5 border-b border-white/5 flex justify-between items-center bg-slate-800/50">
+              <h3 className="text-sm font-bold text-white">Editar Plataforma</h3>
+              <button onClick={() => setEditingPlatform(null)} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Nombre de Plataforma</label>
+                <input type="text" value={editingPlatform.name} onChange={e => setEditingPlatform({...editingPlatform, name: e.target.value})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Precio Mensual ($)</label>
+                <input type="number" value={editingPlatform.price} onChange={e => setEditingPlatform({...editingPlatform, price: Number(e.target.value)})} className="w-full bg-slate-950/50 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500" />
+              </div>
+            </div>
+            <div className="p-5 border-t border-white/5 bg-slate-800/50 flex justify-end gap-3">
+              <button onClick={() => setEditingPlatform(null)} className="px-5 py-2.5 rounded-xl text-xs font-bold text-slate-300 hover:bg-white/5">Cancelar</button>
+              <button onClick={handleSavePlatform} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-500/20">Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

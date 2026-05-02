@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Users, UserPlus, Phone, Briefcase, ChevronRight, CheckCircle, Clock, MessageSquare, Bot, Megaphone, Settings, Plus, Trash2, Info, Save, Loader2, AlertTriangle, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import RecruitmentBot from "./RecruitmentBot";
+import { useAuth } from "../../contexts/AuthContext";
 
 // ================= TYPES =================
 type User = {
@@ -14,7 +15,11 @@ type Lead = {
   id: number;
   name: string;
   phone: string;
-  status: "nuevo" | "seguimiento" | "cerrado";
+  status: 'interesado' | 'agendo' | 'confirmocita' | 'confirmodd' | 'bienvenida' | 'no_show';
+  appointmentDate?: string;
+  appointmentTime?: string;
+  interviewer?: string;
+  vacancy?: string;
 };
 
 type Agent = {
@@ -52,11 +57,12 @@ type Campaign = {
 export default function Recruitment() {
   const [activeTab, setActiveTab] = useState<"pipeline" | "agents" | "content" | "crm" | "whatsapp" | "bot">("pipeline");
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const { user } = useAuth();
   
   // Pipeline State
   const [leads, setLeads] = useState<Lead[]>([
-    { id: 1, name: "Ana Torres", phone: "5511223344", status: "nuevo" },
-    { id: 2, name: "Luis Gómez", phone: "5599887766", status: "seguimiento" }
+    { id: 1, name: "Ana Torres", phone: "5511223344", status: "interesado", vacancy: "Asesor Comercial" },
+    { id: 2, name: "Luis Gómez", phone: "5599887766", status: "agendo", appointmentDate: "2024-05-03", appointmentTime: "09:30", interviewer: "Lic. Claudia" }
   ]);
   const [newLeadName, setNewLeadName] = useState("");
   const [newLeadPhone, setNewLeadPhone] = useState("");
@@ -71,7 +77,7 @@ export default function Recruitment() {
       id: Date.now(),
       name: newLeadName,
       phone: newLeadPhone,
-      status: "nuevo"
+      status: "interesado"
     };
     
     setLeads([...leads, newLead]);
@@ -82,9 +88,21 @@ export default function Recruitment() {
   };
 
   const renderLeadCard = (lead: Lead) => (
-    <div key={lead.id} className="bg-slate-800 border border-white/10 rounded-lg p-3 mb-3 cursor-pointer hover:border-blue-500/50 transition-colors">
-      <p className="text-sm font-bold text-white">{lead.name}</p>
-      <p className="text-xs text-slate-400 flex items-center gap-1 mt-1"><Phone className="w-3 h-3" /> {lead.phone}</p>
+    <div key={lead.id} className="bg-slate-800 border border-white/10 rounded-lg p-3 mb-3 cursor-pointer hover:border-blue-500/50 transition-colors group">
+      <div className="flex justify-between items-start">
+        <p className="text-sm font-bold text-white">{lead.name}</p>
+        <button onClick={() => window.open(`https://wa.me/${lead.phone.replace(/\D/g, '')}`, '_blank')} className="text-green-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <MessageSquare className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-1"><Phone className="w-2.5 h-2.5" /> {lead.phone}</p>
+      {lead.vacancy && <p className="text-[9px] text-blue-400 font-bold uppercase mt-1">{lead.vacancy}</p>}
+      {lead.appointmentDate && (
+        <div className="mt-2 bg-slate-900/50 rounded p-1.5 border border-white/5">
+          <p className="text-[9px] text-amber-400 font-bold">CITA: {lead.appointmentDate} {lead.appointmentTime}</p>
+          {lead.interviewer && <p className="text-[8px] text-slate-500 uppercase">Entrevista: {lead.interviewer}</p>}
+        </div>
+      )}
     </div>
   );
   
@@ -116,7 +134,7 @@ export default function Recruitment() {
   const saveAgent = async (agent: Agent) => {
     setSavingAgent(true);
     try {
-      const token = JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || '';
+      const token = user?.sessionToken || '';
       await fetch('/api/recruitment/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -211,35 +229,55 @@ export default function Recruitment() {
                   Pipeline de Reclutamiento
                 </h2>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {/* Column: Nuevo */}
-                  <div className="bg-black/20 rounded-xl p-4 border border-white/5">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-blue-400"></div>
-                      Nuevos ({leads.filter(l => l.status === 'nuevo').length})
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-3 overflow-x-auto pb-4">
+                  {/* Column: INTERESADO */}
+                  <div className="bg-black/20 rounded-xl p-3 border border-white/5 min-w-[200px]">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
+                      Interesado ({leads.filter(l => l.status === 'interesado').length})
                     </h3>
                     <div className="space-y-2">
-                      {leads.filter(l => l.status === 'nuevo').map(renderLeadCard)}
+                      {leads.filter(l => l.status === 'interesado').map(renderLeadCard)}
                     </div>
                   </div>
-                  {/* Column: Seguimiento */}
-                  <div className="bg-black/20 rounded-xl p-4 border border-white/5">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-amber-400"></div>
-                      En Seguimiento ({leads.filter(l => l.status === 'seguimiento').length})
+                  {/* Column: AGENDÓ */}
+                  <div className="bg-black/20 rounded-xl p-3 border border-white/5 min-w-[200px]">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-amber-400"></div>
+                      Agendó ({leads.filter(l => l.status === 'agendo').length})
                     </h3>
                     <div className="space-y-2">
-                      {leads.filter(l => l.status === 'seguimiento').map(renderLeadCard)}
+                      {leads.filter(l => l.status === 'agendo').map(renderLeadCard)}
                     </div>
                   </div>
-                  {/* Column: Cerrado */}
-                  <div className="bg-black/20 rounded-xl p-4 border border-white/5">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
-                      Cerrados ({leads.filter(l => l.status === 'cerrado').length})
+                  {/* Column: CONFIRMÓ CITA */}
+                  <div className="bg-black/20 rounded-xl p-3 border border-white/5 min-w-[200px]">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
+                      Confirmó Cita ({leads.filter(l => l.status === 'confirmocita').length})
                     </h3>
                     <div className="space-y-2">
-                      {leads.filter(l => l.status === 'cerrado').map(renderLeadCard)}
+                      {leads.filter(l => l.status === 'confirmocita').map(renderLeadCard)}
+                    </div>
+                  </div>
+                  {/* Column: D,DO */}
+                  <div className="bg-black/20 rounded-xl p-3 border border-white/5 min-w-[200px]">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-violet-400"></div>
+                      Conf. D,DO ({leads.filter(l => l.status === 'confirmodd').length})
+                    </h3>
+                    <div className="space-y-2">
+                      {leads.filter(l => l.status === 'confirmodd').map(renderLeadCard)}
+                    </div>
+                  </div>
+                  {/* Column: BIENVENIDA */}
+                  <div className="bg-black/20 rounded-xl p-3 border border-white/5 min-w-[200px]">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
+                      Bienvenida ({leads.filter(l => l.status === 'bienvenida').length})
+                    </h3>
+                    <div className="space-y-2">
+                      {leads.filter(l => l.status === 'bienvenida').map(renderLeadCard)}
                     </div>
                   </div>
                 </div>

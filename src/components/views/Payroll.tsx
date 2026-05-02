@@ -4,6 +4,7 @@ import { cn, formatCurrency } from '../../lib/utils';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { api } from '../../api';
+import { useAuth } from '../../contexts/AuthContext';
 
 // --- MOCK DATA FOR MANAGEMENT ---
 const mockUsers = [
@@ -212,6 +213,7 @@ function BancariosTab() {
   const [editing, setEditing] = useState(false);
   const [saved, setSaved] = useState(false);
   const inp = 'w-full bg-zinc-950/50 border border-white/5 rounded-xl p-3 text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500/50';
+  const { user } = useAuth();
 
   /** Enmascara mostrando solo los ultimos 4 digitos. */
   const maskTail = (v: string) => {
@@ -229,14 +231,14 @@ function BancariosTab() {
 
     // Audit: cualquier cambio en datos bancarios queda registrado en seguridad.
     if (diff.length > 0) {
-      const user = (() => { try { return JSON.parse(localStorage.getItem('hdreams_user') || '{}'); } catch { return {}; } })();
+      const token = user?.sessionToken || '';
       fetch('/api/profile/bank/audit', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-uid'   : user.uid   || 'anonymous',
-          'x-user-email' : user.email || '',
-          ...(user.sessionToken ? { Authorization: `Bearer ${user.sessionToken}` } : {}),
+          'x-user-uid'   : user?.uid   || 'anonymous',
+          'x-user-email' : user?.email || '',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           banco: form.banco, titular: form.titular,
@@ -298,6 +300,7 @@ function AdelantosTab() {
   const [toast, setToast]   = useState('');
   const notify = (msg: string) => { setToast(msg); setTimeout(()=>setToast(''),3000); };
   const inp = 'w-full bg-zinc-900/50 border border-white/5 rounded-xl p-3 text-zinc-100 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500/50';
+  const { user } = useAuth();
 
   useEffect(() => {
     fetch('/api/payroll/advances').then(r=>r.json()).then(setAdvances).catch(()=>{});
@@ -308,19 +311,19 @@ function AdelantosTab() {
     if (!motivo.trim()) return notify('Describe el motivo del adelanto');
     setSending(true);
     try {
-      const user = (() => { try { return JSON.parse(localStorage.getItem('hdreams_user') || '{}'); } catch { return {}; } })();
+      const token = user?.sessionToken || '';
       const r = await fetch('/api/payroll/advances', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-user-uid'   : user.uid   || 'anonymous',
-          'x-user-email' : user.email || '',
-          ...(user.sessionToken ? { Authorization: `Bearer ${user.sessionToken}` } : {}),
+          'x-user-uid'   : user?.uid   || 'anonymous',
+          'x-user-email' : user?.email || '',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           monto: parseFloat(monto), motivo,
-          agente_nombre: user.displayName || user.email || 'Asesor',
-          agente_uid   : user.uid,
+          agente_nombre: user?.displayName || user?.email || 'Asesor',
+          agente_uid   : user?.uid,
           estado       : 'pendiente',
         }),
       });

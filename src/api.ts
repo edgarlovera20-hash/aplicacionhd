@@ -2,22 +2,34 @@ const API_URL = '/api';
 
 const STORAGE_KEY = 'hdreams_user';
 
-const getUser = (): { uid?: string; email?: string; sessionToken?: string } => {
+// ── SEGURIDAD: Access token SOLO en memoria ────────────────────────────────
+// El sessionToken ya NO se guarda en localStorage (vulnerable a XSS).
+// Solo se mantiene en esta variable de módulo. Al recargar la página,
+// se renueva automáticamente vía /api/auth/refresh (cookie httpOnly).
+let _accessToken: string | null = null;
+
+/** Obtiene datos del usuario de localStorage (sin el token sensible). */
+const getUser = (): { uid?: string; email?: string } => {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
   catch { return {}; }
 };
 
-const setAccessToken = (token: string) => {
-  try {
-    const current = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, sessionToken: token }));
-  } catch { /* storage unavailable */ }
+/** Actualiza el access token en memoria (NO en localStorage). */
+export const setAccessToken = (token: string) => {
+  _accessToken = token;
 };
 
+/** Limpia el access token de memoria. */
+export const clearAccessToken = () => {
+  _accessToken = null;
+};
+
+/** Devuelve el access token actual (solo en memoria). */
+export const getAccessToken = (): string | null => _accessToken;
+
 const authHeaders = (): Record<string, string> => {
-  const u = getUser();
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (u.sessionToken) h.Authorization = `Bearer ${u.sessionToken}`;
+  if (_accessToken) h.Authorization = `Bearer ${_accessToken}`;
   return h;
 };
 
@@ -44,6 +56,7 @@ const fetchWithAuth = async (input: string, init: RequestInit, retry = true): Pr
     const newToken = await attemptRefresh();
     if (!newToken) {
       // Refresh falló → sesión realmente expirada
+      _accessToken = null;
       localStorage.removeItem(STORAGE_KEY);
       window.dispatchEvent(new Event('hdreams:session-expired'));
       return res;

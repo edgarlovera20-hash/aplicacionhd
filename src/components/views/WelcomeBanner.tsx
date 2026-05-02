@@ -5,6 +5,7 @@ import {
   ShoppingCart, UserX, Headphones, TrendingUp, ArrowUpRight, ArrowDownRight,
 } from 'lucide-react';
 import { Role } from '../../App';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface WelcomeBannerProps {
   role: Role;
@@ -29,12 +30,12 @@ const ROLE_LABELS: Record<Role, string> = {
 };
 
 const ROLE_GRADIENT: Record<Role, string> = {
-  GERENTE:       'from-blue-600 via-indigo-600 to-violet-700',
-  ADMINISTRACION:'from-indigo-600 via-purple-600 to-fuchsia-700',
-  SUPERVISOR:    'from-emerald-600 via-teal-600 to-cyan-700',
-  VENDEDOR:      'from-amber-500 via-orange-600 to-red-600',
-  RECLUTADORA:   'from-pink-600 via-rose-600 to-red-600',
-  SEGUIMIENTO:   'from-cyan-600 via-sky-600 to-blue-700',
+  GERENTE:       'from-blue-400/30 via-indigo-400/30 to-violet-400/30',
+  ADMINISTRACION:'from-indigo-400/30 via-purple-400/30 to-fuchsia-400/30',
+  SUPERVISOR:    'from-emerald-400/30 via-teal-400/30 to-cyan-400/30',
+  VENDEDOR:      'from-amber-300/30 via-orange-300/30 to-red-300/30',
+  RECLUTADORA:   'from-pink-400/30 via-rose-400/30 to-red-400/30',
+  SEGUIMIENTO:   'from-cyan-400/30 via-sky-400/30 to-blue-400/30',
 };
 
 function getGreeting(): { text: string; Icon: React.FC<any> } {
@@ -80,11 +81,12 @@ export default function WelcomeBanner({ role, onNavigate }: WelcomeBannerProps) 
   const [loading, setLoading]   = useState(true);
   const [lastSync, setLastSync] = useState<Date>(new Date());
   const [spin, setSpin]         = useState(false);
+  const { user } = useAuth();
 
   const fetchStats = async () => {
     try {
-      // Token lives in localStorage under hdreams_user.sessionToken (same as api.ts)
-      const token = JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || '';
+      // SEGURIDAD: token obtenido de memoria (useAuth), no de localStorage
+      const token = user?.sessionToken || '';
       const r = await fetch('/api/dashboard/executive', {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -107,7 +109,7 @@ export default function WelcomeBanner({ role, onNavigate }: WelcomeBannerProps) 
     }
   };
 
-  useEffect(() => { fetchStats(); }, []);
+  useEffect(() => { fetchStats(); }, [user?.sessionToken]);
 
   const handleRefresh = async () => {
     setSpin(true);
@@ -145,7 +147,7 @@ export default function WelcomeBanner({ role, onNavigate }: WelcomeBannerProps) 
   const syncLabel = lastSync.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
 
   return (
-    <div className={`relative rounded-2xl overflow-hidden bg-gradient-to-br ${gradient} shadow-2xl`}>
+    <div className={`relative rounded-[2rem] overflow-hidden bg-gradient-to-br ${gradient} border border-white/10 backdrop-blur-md shadow-2xl`}>
       {/* Decorative blobs */}
       <div className="absolute -top-12 -right-12 w-48 h-48 bg-white/5 rounded-full blur-2xl pointer-events-none" />
       <div className="absolute -bottom-10 -left-10 w-36 h-36 bg-white/5 rounded-full blur-2xl pointer-events-none" />

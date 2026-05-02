@@ -5,20 +5,26 @@ import { api } from '../../api';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface SaleRecord {
-  estatus: string;
-  fCap: string;
-  folio: string;
-  proceso: string;
+  id: string;
+  estatus1: string;
+  fechaCaptura: string;
+  folioSiac: string;
+  estatus2: string;
   paquete: string;
-  tCli: string;
-  estra: string;
-  promId: string;
-  promNom: string;
-  orden: string;
-  tel: string;
-  fPos: string;
-  pisa: string;
-  serv: string;
+  tipoCliente: string;
+  tipoServicio: string;
+  areaEstrategia: string;
+  usuario: string;
+  nombrePromotor: string;
+  ordenServicio: string;
+  telefonoAsig: string;
+  fechaPosteo: string;
+  tienda: string;
+  etapaPisa: string;
+  osFinal: string;
+  telefonoTelmex: string;
+  zona: string;
+  clienteMoroso: string;
 }
 
 export default function ConsultasSeguimiento() {
@@ -39,9 +45,9 @@ export default function ConsultasSeguimiento() {
 
   const matchesCurrentUser = (item: SaleRecord) => {
     if (!isVendedor) return true;
-    const promId = (item.promId || '').toLowerCase();
-    const promNom = (item.promNom || '').toLowerCase();
-    return userIdentifiers.some(id => id && (promId === id || promNom === id || promId.includes(id) || promNom.includes(id)));
+    const usu = (item.usuario || '').toLowerCase();
+    const promNom = (item.nombrePromotor || '').toLowerCase();
+    return userIdentifiers.some(id => id && (usu === id || promNom === id || usu.includes(id) || promNom.includes(id)));
   };
 
   const [sales, setSales] = useState<SaleRecord[]>([]);
@@ -57,9 +63,9 @@ export default function ConsultasSeguimiento() {
   const [posFin, setPosFin] = useState('');
 
   const MOCK_DATA: SaleRecord[] = [
-    { estatus: 'POSTEADA', fCap: '2024-04-15', folio: 'SIAC-88273', proceso: 'Fibra', paquete: 'Doble Play 250 MB', tCli: 'Nuevo', estra: 'Venta Directa', promId: 'PROM-001', promNom: 'Juan Pérez', orden: 'ORD-9921', tel: '5512345678', fPos: '2024-04-16', pisa: 'Activo', serv: 'Internet + Tel' },
-    { estatus: 'PAGADO', fCap: '2024-04-18', folio: 'SIAC-88274', proceso: 'Fibra', paquete: 'Triple Play 500 MB', tCli: 'Nuevo', estra: 'Venta Directa', promId: 'PROM-002', promNom: 'Maria García', orden: 'ORD-9922', tel: '5587654321', fPos: '2024-04-19', pisa: 'Posteado', serv: 'Internet' },
-    { estatus: 'PROCESO', fCap: '2024-04-20', folio: 'SIAC-88275', proceso: 'Cobre', paquete: 'Doble Play 100 MB', tCli: 'Nuevo', estra: 'Redes Sociales', promId: 'PROM-001', promNom: 'Juan Pérez', orden: 'ORD-9923', tel: '5500001111', fPos: '', pisa: 'Pendiente', serv: 'Internet + Tel' },
+    { id: '1', estatus1: 'POSTEADA', fechaCaptura: '2024-04-15', folioSiac: 'SIAC-88273', estatus2: 'POSTEADA', paquete: 'Doble Play 250 MB', tipoCliente: 'Nuevo', tipoServicio: 'Internet + Tel', areaEstrategia: 'Venta Directa', usuario: 'PROM-001', nombrePromotor: 'Juan Pérez', ordenServicio: 'ORD-9921', telefonoAsig: '5512345678', fechaPosteo: '2024-04-16', tienda: 'Sucursal Centro', etapaPisa: 'Activo', osFinal: 'OS-111', telefonoTelmex: '5511223344', zona: 'Norte', clienteMoroso: 'No' },
+    { id: '2', estatus1: 'PAGADO', fechaCaptura: '2024-04-18', folioSiac: 'SIAC-88274', estatus2: 'PAGADO', paquete: 'Triple Play 500 MB', tipoCliente: 'Nuevo', tipoServicio: 'Internet', areaEstrategia: 'Venta Directa', usuario: 'PROM-002', nombrePromotor: 'Maria García', ordenServicio: 'ORD-9922', telefonoAsig: '5587654321', fechaPosteo: '2024-04-19', tienda: 'Sucursal Sur', etapaPisa: 'Posteado', osFinal: 'OS-112', telefonoTelmex: '5588776655', zona: 'Sur', clienteMoroso: 'No' },
+    { id: '3', estatus1: 'PROCESO', fechaCaptura: '2024-04-20', folioSiac: 'SIAC-88275', estatus2: 'PROCESO', paquete: 'Doble Play 100 MB', tipoCliente: 'Nuevo', tipoServicio: 'Internet + Tel', areaEstrategia: 'Redes Sociales', usuario: 'PROM-001', nombrePromotor: 'Juan Pérez', ordenServicio: 'ORD-9923', telefonoAsig: '5500001111', fechaPosteo: '', tienda: 'Digital', etapaPisa: 'Pendiente', osFinal: '', telefonoTelmex: '5500112233', zona: 'Este', clienteMoroso: 'No' },
   ];
 
   useEffect(() => {
@@ -68,20 +74,26 @@ export default function ConsultasSeguimiento() {
         setSales(MOCK_DATA);
       } else {
         const formatted = data.map(d => ({
-          estatus: d.estado?.toUpperCase() || 'PENDIENTE',
-          fCap: d.fechaSolicitud || d.created_at || '',
-          folio: d.folio,
-          proceso: d.proceso || 'Fibra',
-          paquete: d.paqueteNombre || d.paquete_nombre || '',
-          tCli: d.tipoCliente || 'Nuevo',
-          estra: d.estrategia || 'Venta Directa',
-          promId: d.promotorId || 'N/A',
-          promNom: d.promotorNombre || d.nombres || 'Sistema',
-          orden: d.orden || '',
-          tel: d.telefonoTitular || d.telefono || '',
-          fPos: d.fechaPosteo || '',
-          pisa: d.pisaStatus || 'Pendiente',
-          serv: d.tipoServicio || 'Internet'
+          id: d.idImportado || d.id || '',
+          estatus1: d.estado || d.estatus1 || 'PENDIENTE',
+          fechaCaptura: d.fechaSolicitud || d.fechaCaptura || d.created_at || '',
+          folioSiac: d.folio || d.folioSiac || '',
+          estatus2: d.estado2 || d.estatus2 || '',
+          paquete: d.paqueteNombre || d.paquete || '',
+          tipoCliente: d.tipoCliente || 'Nuevo',
+          tipoServicio: d.tipoServicio || '',
+          areaEstrategia: d.areaEstrategia || d.estrategia || '',
+          usuario: d.usuario || d.promotorId || '',
+          nombrePromotor: d.promotorNombre || d.nombres || d.nombrePromotor || 'Sistema',
+          ordenServicio: d.orden || d.ordenServicio || '',
+          telefonoAsig: d.telefonoAsig || d.telefono || '',
+          fechaPosteo: d.fechaPosteo || '',
+          tienda: d.tienda || '',
+          etapaPisa: d.etapaPisa || d.pisaStatus || '',
+          osFinal: d.osFinal || '',
+          telefonoTelmex: d.telefonoTitular || d.telefonoTelmex || '',
+          zona: d.zona || '',
+          clienteMoroso: d.clienteMoroso || ''
         })) as SaleRecord[];
         setSales(formatted);
       }
@@ -127,27 +139,30 @@ export default function ConsultasSeguimiento() {
         const cols = lines[i].split(',');
         if (cols.length < 10) continue;
         
-        const folio = cols[2];
+        const folio = cols[3];
         if (!folio) continue;
         
         const record = {
-          estado: cols[0],
-          fechaSolicitud: cols[1],
-          folio: cols[2],
-          proceso: cols[3],
-          paqueteNombre: cols[4] || 'N/A',
-          tipoCliente: cols[5],
-          area: cols[6],
-          estrategia: cols[7],
-          promotorId: cols[8],
-          orden: cols[9],
-          telefonoTitular: cols[10] || '0000000000',
-          fechaPosteo: cols[11] || '',
-          tienda: cols[12] || '',
-          pisaStatus: cols[13] || '',
-          tipoServicio: cols[14] || '',
-          zona: cols[15] || '',
-          nombres: "Cliente Importado SIAC",
+          idImportado: cols[0] || '',
+          estado: cols[1] || '',
+          fechaSolicitud: cols[2] || '',
+          folio: cols[3] || '',
+          estado2: cols[4] || '',
+          paqueteNombre: cols[5] || '',
+          tipoCliente: cols[6] || '',
+          tipoServicio: cols[7] || '',
+          areaEstrategia: cols[8] || '',
+          usuario: cols[9] || '',
+          promotorNombre: cols[10] || '',
+          orden: cols[11] || '',
+          telefonoAsig: cols[12] || '',
+          fechaPosteo: cols[13] || '',
+          tienda: cols[14] || '',
+          etapaPisa: cols[15] || '',
+          osFinal: cols[16] || '',
+          telefonoTitular: cols[17] || '',
+          zona: cols[18] || '',
+          clienteMoroso: cols[19] || '',
           createdAt: new Date().toISOString()
         };
 
@@ -208,11 +223,11 @@ export default function ConsultasSeguimiento() {
 
       const { search: q, estatus: e, promotor: p, capIni: ci, capFin: cf, posIni: pi, posFin: pf } = appliedFilters;
 
-      const matchGlobal = item.folio.toLowerCase().includes(q) || item.tel.includes(q) || item.promNom.toLowerCase().includes(q);
-      const matchEstatus = e === "" || item.estatus === e;
-      const matchPromotor = p === "" || item.promNom.toLowerCase().includes(p) || item.promId.toLowerCase().includes(p);
-      const matchCap = (!ci || item.fCap >= ci) && (!cf || item.fCap <= cf);
-      const matchPos = (!pi || (item.fPos && item.fPos >= pi)) && (!pf || (item.fPos && item.fPos <= pf));
+      const matchGlobal = item.folioSiac.toLowerCase().includes(q) || item.telefonoAsig.includes(q) || item.telefonoTelmex.includes(q) || item.nombrePromotor.toLowerCase().includes(q);
+      const matchEstatus = e === "" || item.estatus1 === e;
+      const matchPromotor = p === "" || item.nombrePromotor.toLowerCase().includes(p) || item.usuario.toLowerCase().includes(p);
+      const matchCap = (!ci || item.fechaCaptura >= ci) && (!cf || item.fechaCaptura <= cf);
+      const matchPos = (!pi || (item.fechaPosteo && item.fechaPosteo >= pi)) && (!pf || (item.fechaPosteo && item.fechaPosteo <= pf));
 
       return matchGlobal && matchEstatus && matchPromotor && matchCap && matchPos;
     });
@@ -227,7 +242,7 @@ export default function ConsultasSeguimiento() {
     if (!q) { setPermissionMsg(null); return; }
     if (filteredData.length > 0) { setPermissionMsg(null); return; }
     const otherFolio = sales.find(item =>
-      (item.folio.toLowerCase().includes(q) || item.tel.includes(q)) && !matchesCurrentUser(item)
+      (item.folioSiac.toLowerCase().includes(q) || item.telefonoAsig.includes(q) || item.telefonoTelmex.includes(q)) && !matchesCurrentUser(item)
     );
     setPermissionMsg(otherFolio ? 'Folio no encontrado o sin permisos' : null);
     if (otherFolio) {
@@ -240,7 +255,7 @@ export default function ConsultasSeguimiento() {
           ...(user?.sessionToken ? { Authorization: `Bearer ${user.sessionToken}` } : {}),
         },
         body: JSON.stringify({
-          folio: otherFolio.folio, cliente_nombre: otherFolio.promNom,
+          folio: otherFolio.folioSiac, cliente_nombre: otherFolio.nombrePromotor,
           motivo: 'busqueda_sin_permisos', intento: 'buscar folio ajeno',
         }),
       }).catch(() => {});
@@ -273,22 +288,28 @@ export default function ConsultasSeguimiento() {
   }, [filteredData, currentPage, itemsPerPage]);
 
   const exportToExcel = () => {
-    const headers = ['Estatus', 'Fecha Captura', 'Folio SIAC', 'Proceso', 'Paquete', 'Tipo Cliente', 'Estrategia', 'ID Promotor', 'Nombre Promotor', 'Orden', 'Teléfono', 'Fecha Posteo', 'PISA', 'Servicio'];
+    const headers = ['ID', 'ESTATUS', 'FECHA CAPTURA', 'FOLIO SIAC', 'ESTATUS', 'PAQUETE', 'TIPO DE CLIENTE', 'TIPO DE SERVICIO', 'AREA ESTRATEGIA', 'USUARIO', 'NOMBRE PROMOTOR', 'ORDEN DE SERVICIO', 'TELEFONO ASIG', 'FECHA POSTEO', 'TIENDA', 'ETAPA PISA', 'OS FINAL', 'TELEFONO TELMEX', 'ZONA', 'CLIENTE MOROSO'];
     const rows = filteredData.map(item => [
-      item.estatus,
-      item.fCap,
-      item.folio,
-      item.proceso,
+      item.id,
+      item.estatus1,
+      item.fechaCaptura,
+      item.folioSiac,
+      item.estatus2,
       item.paquete,
-      item.tCli,
-      item.estra,
-      item.promId,
-      item.promNom,
-      item.orden,
-      item.tel,
-      item.fPos,
-      item.pisa,
-      item.serv
+      item.tipoCliente,
+      item.tipoServicio,
+      item.areaEstrategia,
+      item.usuario,
+      item.nombrePromotor,
+      item.ordenServicio,
+      item.telefonoAsig,
+      item.fechaPosteo,
+      item.tienda,
+      item.etapaPisa,
+      item.osFinal,
+      item.telefonoTelmex,
+      item.zona,
+      item.clienteMoroso
     ]);
 
     const csvContent = "data:text/csv;charset=utf-8," 
@@ -461,28 +482,35 @@ export default function ConsultasSeguimiento() {
           <table className="w-full text-left border-collapse min-w-[1500px]">
             <thead className="sticky top-0 z-20 bg-slate-950/90 backdrop-blur-xl shadow-md">
               <tr>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ID</th>
                 <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10 cursor-pointer hover:bg-white/5 transition-colors">ESTATUS</th>
                 <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10 cursor-pointer hover:bg-white/5 transition-colors">FECHA CAPTURA</th>
                 <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10 cursor-pointer hover:bg-white/5 transition-colors">FOLIO SIAC</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">PROCESO</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ESTATUS</th>
                 <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">PAQUETE</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TIPO CLIENTE</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ESTRATEGIA</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">PROMOTOR</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TIPO DE CLIENTE</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TIPO DE SERVICIO</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">AREA ESTRATEGIA</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">USUARIO</th>
                 <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">NOMBRE PROMOTOR</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ORDEN SERV</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TELEFONO</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ORDEN DE SERVICIO</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TELEFONO ASIG</th>
                 <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10 cursor-pointer hover:bg-white/5 transition-colors">FECHA POSTEO</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ESTATUS PISA</th>
-                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TIPO SERVICIO</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TIENDA</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ETAPA PISA</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">OS FINAL</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">TELEFONO TELMEX</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">ZONA</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">EXPEDIENTE</th>
+                <th className="p-4 text-xs font-bold text-slate-300 uppercase tracking-wider border-b border-white/10">CLIENTE MOROSO</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {paginatedData.length > 0 ? (
                 paginatedData.map((item, idx) => {
                   // Vendedor: ocultar detalles sensibles de morosidad/cancelación
-                  const isMorosoLike = item.estatus === 'CANCELADA' || item.estatus === 'NO ELABORADA';
-                  const displayStatus = isVendedor && isMorosoLike ? 'NO DISPONIBLE' : item.estatus;
+                  const isMorosoLike = item.estatus1 === 'CANCELADA' || item.estatus1 === 'NO ELABORADA';
+                  const displayStatus = isVendedor && isMorosoLike ? 'NO DISPONIBLE' : item.estatus1;
                   const onRowClick = () => {
                     if (isVendedor && isMorosoLike) {
                       alert('Venta no permitida por políticas de riesgo');
@@ -496,12 +524,12 @@ export default function ConsultasSeguimiento() {
                           ...(user?.sessionToken ? { Authorization: `Bearer ${user.sessionToken}` } : {}),
                         },
                         body: JSON.stringify({
-                          folio: item.folio, cliente_nombre: item.promNom,
-                          motivo: item.estatus, intento: 'consultar detalle',
+                          folio: item.folioSiac, cliente_nombre: item.nombrePromotor,
+                          motivo: item.estatus1, intento: 'consultar detalle',
                         }),
                       }).catch(() => {});
                     } else {
-                      alert(`Detalle de Folio: ${item.folio}`);
+                      alert(`Detalle de Folio: ${item.folioSiac}`);
                     }
                   };
                   return (
@@ -510,35 +538,60 @@ export default function ConsultasSeguimiento() {
                     onDoubleClick={onRowClick}
                     className="hover:bg-blue-500/10 transition-colors cursor-pointer group"
                   >
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.id}</td>
                     <td className="p-4 whitespace-nowrap">
                       <span className={cn(
                         "px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border",
                         isVendedor && isMorosoLike
                           ? 'bg-slate-500/20 text-slate-400 border-slate-500/30'
-                          : getStatusBadge(item.estatus)
+                          : getStatusBadge(item.estatus1)
                       )}>
                         {displayStatus}
                       </span>
                     </td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.fCap}</td>
-                    <td className="p-4 text-sm font-medium text-blue-400 whitespace-nowrap">{item.folio}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.proceso}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.fechaCaptura}</td>
+                    <td className="p-4 text-sm font-medium text-blue-400 whitespace-nowrap">{item.folioSiac}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.estatus2}</td>
                     <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.paquete}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.tCli}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.estra}</td>
-                    <td className="p-4 text-sm text-slate-400 whitespace-nowrap">{item.promId}</td>
-                    <td className="p-4 text-sm text-slate-200 font-medium whitespace-nowrap">{item.promNom}</td>
-                    <td className="p-4 text-sm text-slate-400 whitespace-nowrap">{item.orden || '--'}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.tel}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.fPos || '--'}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.pisa}</td>
-                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.serv}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.tipoCliente}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.tipoServicio}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.areaEstrategia}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.usuario}</td>
+                    <td className="p-4 text-sm text-slate-200 font-medium whitespace-nowrap">{item.nombrePromotor}</td>
+                    <td className="p-4 text-sm text-slate-400 whitespace-nowrap">{item.ordenServicio || '--'}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.telefonoAsig}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.fechaPosteo || '--'}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.tienda}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.etapaPisa}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.osFinal}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.telefonoTelmex}</td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.zona}</td>
+                    <td className="p-4 whitespace-nowrap">
+                      {isAdmin ? (
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            alert(`Iniciando descarga de carpeta: EXP_${item.folioSiac}`);
+                            // Aquí iría la lógica real de descarga: window.open(`/api/expedientes/download/${item.folioSiac}`)
+                          }}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 border border-indigo-600/30 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all"
+                        >
+                          <Download className="w-3 h-3" /> Descargar
+                        </button>
+                      ) : (
+                        <div className="flex items-center gap-2 text-slate-500 opacity-50 cursor-not-allowed px-3 py-1.5 border border-white/5 rounded-lg">
+                          <Lock className="w-3 h-3" />
+                          <span className="text-[10px] font-bold uppercase">Restringido</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-4 text-sm text-slate-300 whitespace-nowrap">{item.clienteMoroso}</td>
                   </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={14} className="p-8 text-center text-slate-500">
+                  <td colSpan={20} className="p-8 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <AlertCircle className="w-8 h-8 text-slate-600" />
                       <p>{permissionMsg || 'No se encontraron resultados con los filtros actuales.'}</p>
@@ -553,38 +606,55 @@ export default function ConsultasSeguimiento() {
 
       {/* Pagination Controls */}
       {totalPages > 1 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-900/40 backdrop-blur-md border border-white/10 rounded-2xl p-4 shadow-xl">
-          <p className="text-sm text-slate-400">
-            Mostrando <span className="font-medium text-white">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-medium text-white">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> de <span className="font-medium text-white">{filteredData.length}</span> resultados
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-6 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl p-5 shadow-2xl">
+          <p className="text-sm text-slate-400 whitespace-nowrap order-2 lg:order-1">
+            Mostrando <span className="font-black text-white">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-black text-white">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> de <span className="font-black text-white">{filteredData.length}</span> resultados
           </p>
-          <div className="flex items-center gap-2">
+          
+          <div className="flex items-center gap-3 order-1 lg:order-2 overflow-x-auto pb-2 lg:pb-0 max-w-full custom-scrollbar">
             <button 
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-white/5"
             >
               Anterior
             </button>
-            <div className="flex items-center gap-1">
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                <button
-                  key={page}
-                  onClick={() => setCurrentPage(page)}
-                  className={cn(
-                    "w-8 h-8 rounded-lg text-sm font-medium transition-colors flex items-center justify-center",
-                    currentPage === page 
-                      ? "bg-blue-600 text-white" 
-                      : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                  )}
-                >
-                  {page}
-                </button>
-              ))}
+            
+            <div className="flex items-center gap-1.5">
+              {(() => {
+                const pages = [];
+                const delta = 2; // Number of pages to show around current
+                const left = currentPage - delta;
+                const right = currentPage + delta;
+                
+                for (let i = 1; i <= totalPages; i++) {
+                  if (i === 1 || i === totalPages || (i >= left && i <= right)) {
+                    pages.push(
+                      <button
+                        key={i}
+                        onClick={() => setCurrentPage(i)}
+                        className={cn(
+                          "w-10 h-10 rounded-xl text-xs font-bold transition-all flex items-center justify-center border",
+                          currentPage === i 
+                            ? "bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20 scale-110" 
+                            : "bg-slate-800/50 text-slate-400 border-white/5 hover:bg-slate-700 hover:text-white"
+                        )}
+                      >
+                        {i}
+                      </button>
+                    );
+                  } else if (i === left - 1 || i === right + 1) {
+                    pages.push(<span key={i} className="text-slate-600 px-1">...</span>);
+                  }
+                }
+                return pages;
+              })()}
             </div>
+
             <button 
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-white/5"
             >
               Siguiente
             </button>

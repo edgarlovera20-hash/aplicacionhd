@@ -23,6 +23,26 @@ export type Role = 'GERENTE' | 'ADMINISTRACION' | 'RECLUTADORA' | 'SUPERVISOR' |
 
 export const VALID_ROLES: Role[] = ['GERENTE', 'ADMINISTRACION', 'RECLUTADORA', 'SUPERVISOR', 'VENDEDOR', 'SEGUIMIENTO'];
 
+/** Mapa de permisos: cada rol del usuario tiene acceso a estos módulos */
+const ROLE_PERMISSIONS: Record<string, Role[]> = {
+  gerente:        ['GERENTE', 'ADMINISTRACION', 'RECLUTADORA', 'SUPERVISOR', 'VENDEDOR', 'SEGUIMIENTO'],
+  administracion: ['ADMINISTRACION', 'RECLUTADORA', 'SUPERVISOR', 'VENDEDOR', 'SEGUIMIENTO'],
+  administradora: ['ADMINISTRACION', 'RECLUTADORA', 'SUPERVISOR', 'VENDEDOR', 'SEGUIMIENTO'],
+  reclutadora:    ['RECLUTADORA'],
+  supervisor:     ['SUPERVISOR', 'VENDEDOR'],
+  asesor:         ['VENDEDOR'],
+  vendedor:       ['VENDEDOR'],
+  capacitacion:   ['VENDEDOR'],
+  seguimiento:    ['SEGUIMIENTO'],
+};
+
+/** Retorna los módulos permitidos para el rol del usuario */
+const getAllowedModules = (userRole?: string): Role[] => {
+  if (!userRole) return [];
+  const key = userRole.toLowerCase().trim();
+  return ROLE_PERMISSIONS[key] || ['VENDEDOR'];
+};
+
 
 
 export default function App() {
@@ -37,6 +57,12 @@ export default function App() {
   const [roleLoading, setRoleLoading] = useState(false);
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   const constraintsRef = useRef(null);
+
+  useEffect(() => {
+    // Initialize Theme
+    const savedTheme = localStorage.getItem('hd_theme') || 'medium';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  }, []);
 
   useEffect(() => {
     if (!user) setRole(null);
@@ -171,49 +197,30 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-w-4xl w-full">
-              <RoleButton
-                title="Dirección"
-                desc="Control total y métricas"
-                icon={Crown}
-                color="blue"
-                iconClassName="text-amber-400"
-                onClick={() => setModulePreview({ title: 'Dirección', desc: 'Control total y métricas', icon: Crown, color: 'blue', role: 'GERENTE', iconClassName: 'text-amber-400' })}
-              />
-              <RoleButton
-                title="Administración"
-                desc="Gestión y soporte"
-                icon={ShieldCheck}
-                color="indigo"
-                onClick={() => setModulePreview({ title: 'Administración', desc: 'Gestión y soporte', icon: ShieldCheck, color: 'indigo', role: 'ADMINISTRACION' })}
-              />
-              <RoleButton
-                title="Reclutamiento"
-                desc="Selección de talento"
-                icon={UserPlus}
-                color="pink"
-                onClick={() => setModulePreview({ title: 'Reclutamiento', desc: 'Selección de talento', icon: UserPlus, color: 'pink', role: 'RECLUTADORA' })}
-              />
-              <RoleButton
-                title="Supervisión"
-                desc="Monitoreo de equipos"
-                icon={Users}
-                color="purple"
-                onClick={() => setModulePreview({ title: 'Supervisión', desc: 'Monitoreo de equipos', icon: Users, color: 'purple', role: 'SUPERVISOR' })}
-              />
-              <RoleButton
-                title="Asesor"
-                desc="Captura y seguimiento"
-                icon={Tag}
-                color="emerald"
-                onClick={() => setModulePreview({ title: 'Asesor', desc: 'Captura y seguimiento', icon: Tag, color: 'emerald', role: 'VENDEDOR' })}
-              />
-              <RoleButton
-                title="Gestión de Clientes"
-                desc="WhatsApp · Seguimiento · Cobranza"
-                icon={MessageCircle}
-                color="cyan"
-                onClick={() => setModulePreview({ title: 'Gestión de Clientes', desc: 'WhatsApp · Seguimiento · Cobranza', icon: MessageCircle, color: 'cyan', role: 'SEGUIMIENTO' })}
-              />
+              {(() => {
+                const allowed = getAllowedModules(user.role);
+                const allModules: { title: string; desc: string; icon: any; color: string; role: Role; iconClassName?: string }[] = [
+                  { title: 'Dirección',          desc: 'Control total y métricas',           icon: Crown,          color: 'blue',    role: 'GERENTE',        iconClassName: 'text-amber-400' },
+                  { title: 'Administración',     desc: 'Gestión y soporte',                  icon: ShieldCheck,    color: 'indigo',  role: 'ADMINISTRACION' },
+                  { title: 'Reclutamiento',      desc: 'Selección de talento',               icon: UserPlus,       color: 'pink',    role: 'RECLUTADORA' },
+                  { title: 'Supervisión',        desc: 'Monitoreo de equipos',               icon: Users,          color: 'purple',  role: 'SUPERVISOR' },
+                  { title: 'Asesor',             desc: 'Captura y seguimiento',              icon: Tag,            color: 'emerald', role: 'VENDEDOR' },
+                  { title: 'Gestión de Clientes',desc: 'WhatsApp · Seguimiento · Cobranza',  icon: MessageCircle,  color: 'cyan',    role: 'SEGUIMIENTO' },
+                ];
+                return allModules
+                  .filter(m => allowed.includes(m.role))
+                  .map(m => (
+                    <RoleButton
+                      key={m.role}
+                      title={m.title}
+                      desc={m.desc}
+                      icon={m.icon}
+                      color={m.color}
+                      iconClassName={m.iconClassName}
+                      onClick={() => setModulePreview({ ...m })}
+                    />
+                  ));
+              })()}
             </div>
 
             {/* ── KPI Bar fija ── */}
@@ -237,7 +244,7 @@ export default function App() {
 
             <div className="mt-8">
               <AuroraButton
-                onClick={logout}
+                onClick={() => { if (window.confirm('¿Cerrar sesión? Se perderán los cambios no guardados.')) logout(); }}
                 glowClassName="from-red-600 via-rose-400 to-red-600 opacity-40"
                 className="flex items-center gap-2 px-6 py-3 text-slate-400 hover:text-white"
               >

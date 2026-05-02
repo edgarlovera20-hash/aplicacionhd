@@ -6,6 +6,7 @@ import {
   QrCode, Share2, ExternalLink, Globe
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { recruitmentIA, RECRUITMENT_KNOWLEDGE_BASE } from '../../services/recruitmentIA';
 
 interface AIAgentViewProps {
   onBack: () => void;
@@ -33,7 +34,7 @@ export default function AIAgentView({ onBack }: AIAgentViewProps) {
     {
       id: '1',
       role: 'bot',
-      text: '¡Hola! Soy tu asistente de gestión inteligente de HDreams. 🤖\n\nPuedo ayudarte a consultar el estado de tus folios y verificar si tus expedientes están listos para validación.\n\n¿Qué folio deseas consultar hoy?',
+      text: '¡Hola! Soy tu asistente de gestión inteligente de HDreams. 🤖\n\nPuedo ayudarte con:\n\n1️⃣ **Gestión de Folios:** Verifica el estado de tus contratos.\n2️⃣ **Reclutamiento Masivo:** Consulta vacantes y perfiles (Volanteros, Asesores, Ayudantes).\n3️⃣ **Soporte IA:** Resolución de dudas operativas.\n\n¿En qué puedo apoyarte hoy?',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -84,10 +85,21 @@ export default function AIAgentView({ onBack }: AIAgentViewProps) {
             siac: false
           }
         };
+      } else if (inputLower.includes('vacante') || inputLower.includes('trabajo') || inputLower.includes('recluta')) {
+        botResponse = "¡Excelente! Actualmente tenemos vacantes para:\n\n" + 
+          RECRUITMENT_KNOWLEDGE_BASE.profiles.map(p => `🔹 **${p.title}**: ${p.description}`).join('\n') + 
+          "\n\n¿Cuál de estas te interesa para explicarte los requisitos?";
+      } else if (RECRUITMENT_KNOWLEDGE_BASE.profiles.some(p => inputLower.includes(p.title.toLowerCase()) || inputLower.includes(p.id))) {
+        const profile = RECRUITMENT_KNOWLEDGE_BASE.profiles.find(p => inputLower.includes(p.title.toLowerCase()) || inputLower.includes(p.id));
+        if (profile) {
+          botResponse = `Para el puesto de **${profile.title}**, buscamos:\n\n` + 
+            profile.requirements.map(r => `✅ ${r}`).join('\n') + 
+            `\n\n**Filtro Rápido:** ${profile.filterQuestions[0]}\n\nResponde para avanzar en tu proceso.`;
+        }
       } else if (inputLower.includes('hola') || inputLower.includes('buen')) {
-        botResponse = "¡Hola de nuevo! Estoy listo para revisar cualquier folio que necesites. Solo escribe el número de contrato.";
+        botResponse = "¡Hola! Soy el agente cognitivo de Heavenly Dreams. ¿Deseas consultar un folio de venta o estás buscando información sobre nuestras vacantes de empleo?";
       } else {
-        botResponse = "Lo siento, no he entendido esa solicitud. Por favor, proporcióname un número de folio (ej. CON-2024-04-1847) para que pueda revisar el expediente.";
+        botResponse = "Lo siento, no he entendido esa solicitud. Puedes proporcionarme un folio de contrato o preguntarme sobre nuestras vacantes disponibles (Volantero, Asesor, Ayudante, etc.).";
       }
 
       const botMsg: Message = {

@@ -7,8 +7,25 @@ export interface TokenPayload {
   role:  string;
 }
 
-const accessSecret  = () => process.env.JWT_ACCESS_SECRET  ?? 'dev-access-secret-CHANGE-IN-PROD';
-const refreshSecret = () => process.env.JWT_REFRESH_SECRET ?? 'dev-refresh-secret-CHANGE-IN-PROD';
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+/**
+ * SEGURIDAD: en producción, los JWT secrets DEBEN estar definidos.
+ * Si no lo están, lanzamos error fatal en lugar de usar un fallback público
+ * que permitiría a cualquier atacante forjar tokens.
+ * En desarrollo se permite un fallback para facilitar el onboarding.
+ */
+const accessSecret = (): string => {
+  const s = process.env.JWT_ACCESS_SECRET;
+  if (!s && IS_PROD) throw new Error('[FATAL] JWT_ACCESS_SECRET no definido — no se puede firmar tokens en producción.');
+  return s || 'dev-access-secret-NOT-FOR-PROD';
+};
+
+const refreshSecret = (): string => {
+  const s = process.env.JWT_REFRESH_SECRET;
+  if (!s && IS_PROD) throw new Error('[FATAL] JWT_REFRESH_SECRET no definido — no se puede firmar tokens en producción.');
+  return s || 'dev-refresh-secret-NOT-FOR-PROD';
+};
 
 export const signAccessToken = (p: TokenPayload): string =>
   jwt.sign(p, accessSecret(), { expiresIn: '15m' });

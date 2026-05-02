@@ -1,35 +1,31 @@
-import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState, useEffect, useCallback, lazy, Suspense, useRef } from 'react';
+import { motion, AnimatePresence, useScroll, useSpring, useTransform } from 'motion/react';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../api';
 import Logo from '../ui/Logo';
 import { AuroraButton } from '../ui/aurora-button';
-// Sparkles uses Three.js — lazy so vendor-three only loads when auth screen is shown
 const Sparkles = lazy(() => import('../ui/sparkles').then(m => ({ default: m.Sparkles })));
 import { MatrixText } from '../ui/matrix-text';
-import { Mail, Lock, Loader2, User, Phone, Calendar, Briefcase, Users, Eye, EyeOff, Fingerprint, ShieldCheck, X, CheckCircle2, AlertCircle, Smartphone } from 'lucide-react';
-import { AssistedPasswordConfirmation } from '../ui/assisted-password-confirmation';
+import { Mail, Lock, Loader2, User, Phone, Calendar, Briefcase, Users, Eye, EyeOff, Fingerprint, ShieldCheck, X, CheckCircle2, AlertCircle, Smartphone, ArrowRight, ChevronDown, Sparkles as SparklesIcon } from 'lucide-react';
 import {
   checkBiometricSupport,
   checkRegistered,
   registerBiometric,
   authenticateWithBiometric,
   isLocallyRegistered,
-  clearLocalBiometric,
 } from '../../services/webAuthnService';
 
 export default function AuthView() {
   const [isLogin, setIsLogin] = useState(true);
   const [isReset, setIsReset] = useState(false);
   const { login } = useAuth();
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Basic Auth State
+  // Form States
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-
-  // Registration Additional Fields
   const [formData, setFormData] = useState({
     nombres: '',
     apellidoPaterno: '',
@@ -46,574 +42,402 @@ export default function AuthView() {
   const [rememberMe, setRememberMe] = useState(false);
   const [generatedUsername, setGeneratedUsername] = useState('');
 
-  // ── Biometría ─────────────────────────────────────────────
-  const [bioSupport, setBioSupport]       = useState<{ supported: boolean; platform: boolean; type: string } | null>(null);
+  // Biometría
+  const [bioSupport, setBioSupport] = useState<{ supported: boolean; platform: boolean; type: string } | null>(null);
   const [bioRegistered, setBioRegistered] = useState(false);
-  const [bioLoading, setBioLoading]       = useState(false);
-  const [bioError, setBioError]           = useState('');
-  const [showBioModal, setShowBioModal]   = useState(false); // modal "activar huella"
-  const [lastLoggedUser, setLastLoggedUser] = useState<any>(null); // user object para activar después de login
+  const [bioLoading, setBioLoading] = useState(false);
+  const [bioError, setBioError] = useState('');
+  const [showBioModal, setShowBioModal] = useState(false);
+  const [lastLoggedUser, setLastLoggedUser] = useState<any>(null);
 
-  // Detectar soporte biométrico al montar
   useEffect(() => {
     checkBiometricSupport().then(setBioSupport);
   }, []);
 
-  // Actualizar estado de registro cuando cambia el email
   useEffect(() => {
     if (!email || !isLogin) return;
-    // Primero check local (rápido), luego confirma con servidor
     setBioRegistered(isLocallyRegistered(email));
     checkRegistered(email).then(setBioRegistered);
   }, [email, isLogin]);
-
-  /** Iniciar sesión con huella dactilar */
-  const handleBiometricLogin = useCallback(async () => {
-    if (!email) { setBioError('Ingresa tu correo primero'); return; }
-    setBioLoading(true); setBioError('');
-    try {
-      const result = await authenticateWithBiometric(email);
-      if (result.ok && result.user) {
-        login(result.user);
-      } else {
-        setBioError(result.error || 'Autenticación fallida');
-      }
-    } finally {
-      setBioLoading(false);
-    }
-  }, [email, login]);
-
-  /** Activar huella después de login con contraseña */
-  const handleActivateBiometric = useCallback(async () => {
-    if (!lastLoggedUser) return;
-    setBioLoading(true); setBioError('');
-    try {
-      const result = await registerBiometric(
-        lastLoggedUser.email,
-        lastLoggedUser.uid,
-        lastLoggedUser.nombres || lastLoggedUser.email,
-      );
-      if (result.ok) {
-        setBioRegistered(true);
-        setShowBioModal(false);
-        setMessage('¡Huella dactilar activada exitosamente! La próxima vez puedes iniciar sesión con tu huella.');
-        login(lastLoggedUser);
-      } else {
-        setBioError(result.error || 'No se pudo activar la huella');
-      }
-    } finally {
-      setBioLoading(false);
-    }
-  }, [lastLoggedUser, login]);
-
-  const generateUsername = (nombres: string, apellido: string) => {
-    const clean = (str: string) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
-    return `${clean(nombres.split(' ')[0])}.${clean(apellido)}`;
-  };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  React.useEffect(() => {
-    const savedEmail = localStorage.getItem('remembered_email');
-    if (savedEmail) {
-      setEmail(savedEmail);
-      setRememberMe(true);
-    }
-  }, []);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setMessage('');
-    
-    // Validación estricta manual para registro
-    if (!isLogin && !isReset) {
-      if (!formData.nombres.trim() || !formData.apellidoPaterno.trim() || !formData.telefonoCelular.trim()) {
-        setError('Por favor, completa todos los campos obligatorios del perfil de forma correcta.');
-        return;
-      }
-    }
-
     setLoading(true);
 
     try {
       if (isReset) {
-        // Implement reset endpoint if needed
-        setMessage('Se ha enviado un correo para restablecer tu contraseña (Simulado).');
+        setMessage('Instrucciones enviadas a tu correo.');
         setIsReset(false);
       } else if (isLogin) {
         const user = await api.post('/auth/login', { email, password });
-
-        if (rememberMe) {
-          localStorage.setItem('remembered_email', email);
-        } else {
-          localStorage.removeItem('remembered_email');
-        }
-
-        // Si biometría disponible y no registrada → ofrecer activación
+        if (rememberMe) localStorage.setItem('remembered_email', email);
         if (bioSupport?.platform && !bioRegistered) {
           setLastLoggedUser(user);
           setShowBioModal(true);
-          // No llamamos login() aquí: esperamos decisión del usuario
         } else {
           login(user);
         }
       } else {
-        if (password !== confirmPassword) {
-          setError('Las contraseñas no coinciden.');
-          setLoading(false);
-          return;
-        }
-        
-        const username = generateUsername(formData.nombres, formData.apellidoPaterno);
-        const newUser = await api.post('/auth/register', {
-          email, password, ...formData, usuario: username
-        });
-        
+        if (password !== confirmPassword) throw new Error('Las contraseñas no coinciden.');
+        const username = `${formData.nombres.split(' ')[0]}.${formData.apellidoPaterno}`.toLowerCase();
+        await api.post('/auth/register', { email, password, ...formData, usuario: username });
         setGeneratedUsername(username);
-        setMessage(`Cuenta creada exitosamente. Tu usuario es: ${username}`);
+        setMessage(`¡Bienvenido al Dream Team! Usuario: ${username}`);
       }
     } catch (err: any) {
-      console.error('Auth error:', err);
-      setError(err.message || 'Ocurrió un error en la autenticación.');
+      setError(err.message || 'Error en el proceso.');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleBiometricLogin = async () => {
+    if (!email) { setBioError('Ingresa tu correo'); return; }
+    setBioLoading(true);
+    try {
+      const result = await authenticateWithBiometric(email);
+      if (result.ok && result.user) login(result.user);
+      else setBioError(result.error || 'Fallo');
+    } finally { setBioLoading(false); }
+  };
+
+  const handleActivateBiometric = async () => {
+    if (!lastLoggedUser) return;
+    setBioLoading(true);
+    try {
+      const result = await registerBiometric(lastLoggedUser.email, lastLoggedUser.uid, lastLoggedUser.nombres || lastLoggedUser.email);
+      if (result.ok) { setShowBioModal(false); login(lastLoggedUser); }
+      else setBioError(result.error || 'Error');
+    } finally { setBioLoading(false); }
+  };
+
   return (
-    <div className="relative z-10 flex flex-col items-center justify-center min-h-screen px-4 py-8 w-full max-w-xl mx-auto">
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7 }}
-        className="text-center mb-6"
-      >
-        <div className="flex justify-center mb-4">
-          <div className="p-3 bg-white/5 rounded-3xl border border-white/10 shadow-2xl backdrop-blur-xl relative group">
-            <div className="absolute inset-0 bg-blue-500/10 rounded-3xl blur-2xl group-hover:bg-blue-500/20 transition-all duration-700" />
-            <Logo className="text-[72px] sm:text-[90px] relative z-10" />
-          </div>
-        </div>
-        <div className="space-y-1">
-          <MatrixText
-            text="HEAVENLY DREAMS"
-            className="text-2xl sm:text-3xl text-white tracking-tighter"
-            initialDelay={400}
-            letterAnimationDuration={480}
-            letterInterval={80}
-          />
-          <p className="text-[9px] sm:text-[10px] text-blue-400 font-black uppercase tracking-[0.4em] opacity-80">
-            Enterprise Management System
-          </p>
-        </div>
-      </motion.div>
+    <div className="relative min-h-screen bg-[#020617] overflow-x-hidden selection:bg-blue-500/30 selection:text-white flex flex-col items-center">
+      {/* Background Effects */}
+      <div className="fixed inset-0 z-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_-20%,#1e293b,transparent)] opacity-50" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_0%_100%,#0f172a,transparent)] opacity-30" />
+        <Suspense fallback={null}>
+          <Sparkles density={40} color="#3b82f6" speed={0.1} opacity={0.2} size={1.2} className="absolute inset-0" />
+        </Suspense>
+      </div>
 
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.5, delay: 0.2 }}
-        className="w-full glass-card border-white/5 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden"
-      >
-        <div className="absolute -right-20 -top-20 w-64 h-64 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute -left-20 -bottom-20 w-64 h-64 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none" />
+      {/* Main Content Container */}
+      <div className="relative z-10 w-full max-w-4xl px-4 py-12 flex flex-col items-center">
         
-        <div className="text-center mb-8 relative z-10">
-          <h2 className="text-xl sm:text-2xl font-display font-black text-white uppercase tracking-tight">
-            {isReset ? 'Restablecer Acceso' : (isLogin ? 'Control de Acceso' : 'Registro Dream Team')}
-          </h2>
-          <p className="text-xs text-slate-500 font-medium mt-1">
-            {isReset ? 'Introduce tu correo para continuar' : (isLogin ? 'Ingresa tus credenciales autorizadas' : 'Crea tu perfil de ejecutivo profesional')}
-          </p>
-        </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && <div className="bg-red-500/10 border border-red-500/50 text-red-400 p-3 rounded-xl text-sm text-center">{error}</div>}
-          {message && (
-            <div className="bg-green-500/10 border border-green-500/50 text-green-400 p-4 rounded-xl text-sm text-center space-y-2">
-              <p className="font-bold">{message}</p>
-              {generatedUsername && (
-                <div className="bg-green-500/20 p-2 rounded-lg border border-green-500/30">
-                  <p className="text-xs uppercase tracking-widest opacity-70">Tu Usuario de Acceso:</p>
-                  <p className="text-lg font-mono font-bold">{generatedUsername}</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
-            {/* Common Fields */}
-            <div className="md:col-span-2">
-              <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Correo Electrónico</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Mail className="h-3.5 w-3.5 text-slate-500" />
-                </div>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="block w-full pl-11 pr-4 py-3.5 border border-white/5 rounded-2xl bg-slate-950/40 text-white placeholder:text-slate-600 focus:outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500/30 transition-all text-sm selection:bg-blue-500/30 selection:text-white"
-                  placeholder="ejemplo@hdreams.com"
-                  required
-                />
-              </div>
-            </div>
-
-            {!isLogin && !isReset && (
-              <>
-                <div>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Nombre(s)</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <User className="h-3.5 w-3.5 text-slate-500" />
-                    </div>
-                    <input
-                      type="text"
-                      name="nombres"
-                      value={formData.nombres}
-                      onChange={handleInputChange}
-                      className="block w-full pl-9 pr-3 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors text-sm"
-                      placeholder="Nombres"
-                      required
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Apellido Paterno</label>
-                  <input
-                    type="text"
-                    name="apellidoPaterno"
-                    value={formData.apellidoPaterno}
-                    onChange={handleInputChange}
-                    className="block w-full px-4 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors text-sm"
-                    placeholder="Apellido Paterno"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Apellido Materno</label>
-                  <input
-                    type="text"
-                    name="apellidoMaterno"
-                    value={formData.apellidoMaterno}
-                    onChange={handleInputChange}
-                    className="block w-full px-4 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors text-sm"
-                    placeholder="Apellido Materno"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Fecha de Nacimiento</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Calendar className="h-3.5 w-3.5 text-slate-500" />
-                    </div>
-                    <input
-                      type="date"
-                      name="fechaNacimiento"
-                      value={formData.fechaNacimiento}
-                      onChange={handleInputChange}
-                      className="block w-full pl-9 pr-3 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors text-sm"
-                      required
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Teléfono Celular</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Phone className="h-3.5 w-3.5 text-slate-500" />
-                    </div>
-                    <input
-                      type="tel"
-                      name="telefonoCelular"
-                      value={formData.telefonoCelular}
-                      onChange={handleInputChange}
-                      className="block w-full pl-9 pr-3 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors text-sm"
-                      placeholder="55 1234 5678"
-                      required
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Supervisor Asignado</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Users className="h-3.5 w-3.5 text-slate-500" />
-                    </div>
-                    <input
-                      type="text"
-                      name="supervisorAsignado"
-                      value={formData.supervisorAsignado}
-                      onChange={handleInputChange}
-                      className="block w-full pl-9 pr-3 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors text-sm"
-                      placeholder="Nombre del Supervisor"
-                      required
-                    />
-                  </div>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Puesto Actual</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Briefcase className="h-3.5 w-3.5 text-slate-500" />
-                    </div>
-                    <select
-                      name="puestoActual"
-                      value={formData.puestoActual}
-                      onChange={handleInputChange}
-                      className="block w-full pl-9 pr-3 py-1.5 border border-slate-700 rounded-xl bg-slate-800/50 text-slate-100 focus:ring-2 focus:ring-blue-500 transition-colors appearance-none text-sm"
-                    >
-                      <option value="capacitacion">Capacitación</option>
-                      <option value="asesor">Asesor</option>
-                      <option value="supervisor">Supervisor</option>
-                      <option value="asistente_gerente">Asistente Gerente</option>
-                      <option value="gerente">Gerente</option>
-                      <option value="reclutadora">Reclutadora</option>
-                      <option value="administradora">Administradora</option>
-                    </select>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {!isReset && (
-              <>
-                <div className={isLogin ? "md:col-span-2" : ""}>
-                  <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Contraseña</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Lock className="h-3.5 w-3.5 text-slate-500" />
-                    </div>
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="block w-full pl-11 pr-12 py-3.5 border border-white/5 rounded-2xl bg-slate-950/40 text-white placeholder:text-slate-600 focus:outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500/30 transition-all text-sm selection:bg-blue-500/30 selection:text-white"
-                      placeholder="••••••••"
-                      required
-                      minLength={6}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-slate-300 transition-colors"
-                    >
-                      {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                {!isLogin && (
-                  <div>
-                    <label className="block text-[10px] font-medium text-slate-300 mb-1 uppercase tracking-wider">Confirmar Contraseña</label>
-                    <AssistedPasswordConfirmation
-                      password={password}
-                      onMatch={(matches) => {
-                        if (matches) setConfirmPassword(password);
-                        else setConfirmPassword('');
-                      }}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {isLogin && !isReset && (
-            <div className="flex items-center">
-              <input
-                id="remember-me"
-                name="remember-me"
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-700 rounded bg-slate-800 transition-colors"
-              />
-              <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-300 cursor-pointer">
-                Recordar usuario y contraseña
-              </label>
-            </div>
-          )}
-
-          <AuroraButton
-            type="submit"
-            disabled={loading}
-            wrapperClassName="w-full"
-            className="w-full justify-center py-4 disabled:opacity-50"
-            glowClassName="from-blue-600 via-cyan-400 to-indigo-600"
-          >
-            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : (isReset ? 'Enviar Instrucciones' : (isLogin ? 'Acceder al Sistema' : 'Completar Registro'))}
-          </AuroraButton>
-
-          {/* ── Botón de Huella Digital ──────────────────── */}
-          {isLogin && !isReset && bioSupport?.platform && bioRegistered && (
-            <div className="space-y-2 pt-1">
-              <div className="flex items-center gap-3">
-                <div className="flex-1 h-px bg-white/5" />
-                <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">o</span>
-                <div className="flex-1 h-px bg-white/5" />
-              </div>
-              <button
-                type="button"
-                onClick={handleBiometricLogin}
-                disabled={bioLoading}
-                title={`Autenticar con ${bioSupport.type}`}
-                className="w-full flex items-center justify-center gap-3 py-3.5 rounded-2xl border transition-all duration-300 relative overflow-hidden bg-gradient-to-r from-[#00ABDF]/10 to-indigo-500/10 border-[#00ABDF]/30 hover:border-[#00ABDF]/60 hover:from-[#00ABDF]/20 hover:to-indigo-500/20 text-white active:scale-[0.98]"
-              >
-                {bioLoading ? (
-                  <Loader2 className="w-5 h-5 animate-spin text-[#00ABDF]" />
-                ) : (
-                  <div className="relative animate-pulse">
-                    <Fingerprint className="w-5 h-5 text-[#00ABDF]" />
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400 border border-black/20 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
-                  </div>
-                )}
-                <div className="text-left">
-                  <p className="text-sm font-bold leading-tight text-white">
-                    {bioLoading ? 'Verificando...' : `Iniciar con ${bioSupport.type}`}
-                  </p>
-                  {!bioLoading && (
-                    <p className="text-[10px] text-slate-500 mt-0.5">Toca para autenticar con biometría</p>
-                  )}
-                </div>
-              </button>
-              {bioError && (
-                <p className="text-xs text-red-400 text-center flex items-center justify-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5" />{bioError}
-                </p>
-              )}
-            </div>
-          )}
-        </form>
-
-        {/* ── Modal: Activar Huella Digital ───────────────────────────── */}
-        <AnimatePresence>
-          {showBioModal && (
+        {/* Animated Header */}
+        <motion.div
+          initial={{ opacity: 0, y: -40 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 1, ease: "circOut" }}
+          className="text-center mb-12"
+        >
+          <div className="relative inline-block mb-6">
             <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 rounded-3xl"
+              animate={{ 
+                scale: [1, 1.05, 1],
+                rotate: [0, 1, -1, 0]
+              }}
+              transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+              className="p-5 bg-white/5 rounded-[3rem] border border-white/10 shadow-[0_0_50px_rgba(59,130,246,0.1)] backdrop-blur-2xl relative z-10"
             >
-              <motion.div
-                initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                animate={{ scale: 1, opacity: 1, y: 0 }}
-                exit={{ scale: 0.9, opacity: 0, y: 20 }}
-                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-                className="bg-zinc-900 border border-white/10 rounded-3xl p-7 w-full max-w-sm shadow-2xl text-center space-y-5"
-              >
-                {/* Ícono animado */}
-                <div className="flex justify-center">
-                  <div className="relative">
-                    <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-[#00ABDF]/20 to-indigo-500/20 border border-[#00ABDF]/30 flex items-center justify-center shadow-lg shadow-[#00ABDF]/10">
-                      <Fingerprint className="w-10 h-10 text-[#00ABDF]" />
-                    </div>
-                    <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 border-2 border-zinc-900 flex items-center justify-center">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-white" />
-                    </div>
-                  </div>
-                </div>
+              <Logo className="text-[90px] sm:text-[120px]" />
+            </motion.div>
+            <div className="absolute -inset-4 bg-blue-500/20 rounded-[4rem] blur-3xl -z-10 animate-pulse" />
+          </div>
+          
+          <div className="space-y-3">
+            <MatrixText
+              text="HEAVENLY DREAMS"
+              className="text-4xl sm:text-6xl text-white font-black tracking-tight"
+              initialDelay={500}
+            />
+            <motion.div 
+              initial={{ opacity: 0, letterSpacing: "0.2em" }}
+              animate={{ opacity: 1, letterSpacing: "0.5em" }}
+              transition={{ delay: 1, duration: 1.5 }}
+              className="text-[10px] sm:text-[14px] text-blue-400 font-black uppercase flex items-center justify-center gap-3"
+            >
+              <span className="h-px w-8 bg-blue-500/30" />
+              Enterprise Management System
+              <span className="h-px w-8 bg-blue-500/30" />
+            </motion.div>
+          </div>
+        </motion.div>
 
+        {/* Dynamic Form Perspective Container */}
+        <motion.div
+          layout
+          className="w-full relative"
+          transition={{ type: "spring", stiffness: 200, damping: 25 }}
+        >
+          {/* Form Card */}
+          <div className="glass-card border-white/10 rounded-[3rem] overflow-hidden shadow-[0_20px_80px_rgba(0,0,0,0.6)] flex flex-col md:flex-row">
+            
+            {/* Left Sidebar Info (Visual Attraction) */}
+            <div className="w-full md:w-1/3 bg-gradient-to-br from-blue-600/20 to-indigo-600/20 p-8 border-b md:border-b-0 md:border-r border-white/5 flex flex-col justify-between items-start relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-4 opacity-10">
+                <SparklesIcon className="w-32 h-32 text-white" />
+              </div>
+              
+              <div className="space-y-6 relative z-10">
+                <div className="p-3 bg-white/10 rounded-2xl w-fit">
+                  {isLogin ? <Lock className="w-6 h-6 text-blue-400" /> : <User className="w-6 h-6 text-emerald-400" />}
+                </div>
                 <div>
-                  <h3 className="text-lg font-black text-white tracking-tight">
-                    Activa tu {bioSupport?.type || 'Huella Digital'}
+                  <h3 className="text-2xl font-black text-white leading-tight uppercase tracking-tight">
+                    {isLogin ? 'Acceso Seguro' : 'Únete al Equipo'}
                   </h3>
-                  <p className="text-slate-400 text-sm mt-2 leading-relaxed">
-                    La próxima vez podrás iniciar sesión de forma instantánea sin escribir tu contraseña. Tu huella <strong className="text-white">nunca abandona tu dispositivo</strong>.
+                  <p className="text-slate-400 text-sm mt-2 font-medium">
+                    {isLogin 
+                      ? 'Gestiona tus operaciones con el poder de la IA avanzada.' 
+                      : 'Tu dream team comienza aquí.'}
                   </p>
                 </div>
+              </div>
 
-                {/* Beneficios */}
-                <div className="bg-zinc-800/50 rounded-2xl p-4 space-y-2 text-left">
+              {!isLogin && (
+                <div className="mt-8 space-y-4 w-full">
                   {[
-                    { icon: '⚡', text: 'Acceso instantáneo' },
-                    { icon: '🔒', text: 'Más seguro que una contraseña' },
-                    { icon: '📱', text: 'Solo en este dispositivo' },
-                  ].map(b => (
-                    <div key={b.text} className="flex items-center gap-2.5 text-sm text-slate-300">
-                      <span className="text-base">{b.icon}</span>{b.text}
+                    { label: 'Identidad', active: true },
+                    { label: 'Personal', active: false },
+                    { label: 'Profesional', active: false }
+                  ].map((step, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full ${step.active ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-white/10'}`} />
+                      <span className={`text-[10px] font-black uppercase tracking-widest ${step.active ? 'text-white' : 'text-slate-600'}`}>
+                        {step.label}
+                      </span>
                     </div>
                   ))}
                 </div>
+              )}
 
-                {bioError && (
-                  <p className="text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-xl flex items-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />{bioError}
-                  </p>
+              <div className="mt-auto pt-8 space-y-4">
+                <button
+                  onClick={() => { setIsLogin(!isLogin); setIsReset(false); setError(''); setMessage(''); }}
+                  className="group flex items-center gap-2 text-xs font-black uppercase tracking-widest text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  {isLogin ? 'Crear Cuenta' : 'Ya tengo cuenta'}
+                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={() => alert('Aviso de Privacidad: Sus datos están protegidos bajo cifrado de extremo a extremo.')}
+                  className="block text-[9px] font-bold uppercase tracking-widest text-slate-600 hover:text-slate-400 transition-colors"
+                >
+                  Aviso de Privacidad
+                </button>
+              </div>
+            </div>
+
+            {/* Right Form Area (Scrollable Flow) */}
+            <div className="w-full md:w-2/3 p-6 sm:p-10 max-h-[70vh] md:max-h-none overflow-y-auto custom-scrollbar bg-slate-950/20">
+              <form onSubmit={handleSubmit} className="space-y-8">
+                
+                {error && (
+                  <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-400 text-sm font-bold">
+                    <AlertCircle className="w-5 h-5" /> {error}
+                  </motion.div>
+                )}
+                
+                {message && (
+                  <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="p-6 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl space-y-3">
+                    <div className="flex items-center gap-3 text-emerald-400 font-black">
+                      <CheckCircle2 className="w-6 h-6" /> {message}
+                    </div>
+                    {generatedUsername && (
+                      <div className="p-3 bg-emerald-500/20 rounded-xl border border-emerald-500/20 text-center">
+                        <p className="text-[10px] uppercase font-bold opacity-60">Usuario:</p>
+                        <p className="text-2xl font-mono font-black tracking-tighter">{generatedUsername}</p>
+                      </div>
+                    )}
+                  </motion.div>
                 )}
 
-                <div className="space-y-2">
-                  <button
-                    onClick={handleActivateBiometric}
-                    disabled={bioLoading}
-                    className="w-full py-3.5 bg-gradient-to-r from-[#00ABDF] to-indigo-500 text-white font-black rounded-2xl flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50 shadow-lg shadow-[#00ABDF]/20"
-                  >
-                    {bioLoading
-                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Activando...</>
-                      : <><Fingerprint className="w-4 h-4" /> Activar {bioSupport?.type || 'Huella'}</>
-                    }
-                  </button>
-                  <button
-                    onClick={() => { setShowBioModal(false); lastLoggedUser && login(lastLoggedUser); }}
-                    className="w-full py-2.5 text-sm text-slate-500 hover:text-slate-300 transition-colors font-medium"
-                  >
-                    Ahora no, continuar sin huella
-                  </button>
+                {/* Form Fields Flow */}
+                <div className="space-y-6">
+                  {/* Phase 1: Identity */}
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-4">
+                      <span className="text-[10px] font-black text-slate-700 uppercase tracking-[0.3em]">Credenciales</span>
+                      <div className="flex-1 h-px bg-white/5" />
+                    </div>
+                    <div className="grid grid-cols-1 gap-4">
+                      <div className="relative group">
+                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                        <input
+                          type="email"
+                          placeholder="ejemplo@hdreams.com"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          className="w-full pl-12 pr-4 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500/40 transition-all"
+                          required
+                        />
+                      </div>
+                      <div className="relative group">
+                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                        <input
+                          type={showPassword ? "text" : "password"}
+                          placeholder="Tu Contraseña"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          className="w-full pl-12 pr-12 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500/40 transition-all"
+                          required
+                          minLength={6}
+                        />
+                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white">
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      {!isLogin && (
+                        <div className="relative group">
+                          <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-emerald-400 transition-colors" />
+                          <input
+                            type="password"
+                            placeholder="Confirmar Contraseña"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            className={`w-full pl-12 pr-4 py-4 bg-white/5 border rounded-2xl text-white text-sm focus:outline-none focus:ring-4 transition-all ${
+                              confirmPassword && password === confirmPassword ? 'border-emerald-500/40 focus:ring-emerald-500/10' : 'border-white/5 focus:ring-blue-500/10'
+                            }`}
+                            required
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Phase 2: Personal (Registration Only) */}
+                  {!isLogin && !isReset && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 pt-4">
+                      <div className="flex items-center gap-4">
+                        <span className="text-[10px] font-black text-slate-700 uppercase tracking-[0.3em]">Datos Personales</span>
+                        <div className="flex-1 h-px bg-white/5" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="sm:col-span-2 relative group">
+                          <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                          <input name="nombres" type="text" placeholder="Nombre completo" value={formData.nombres} onChange={handleInputChange} className="w-full pl-12 pr-4 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" required />
+                        </div>
+                        <input name="apellidoPaterno" type="text" placeholder="Ap. Paterno" value={formData.apellidoPaterno} onChange={handleInputChange} className="w-full px-5 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" required />
+                        <input name="apellidoMaterno" type="text" placeholder="Ap. Materno" value={formData.apellidoMaterno} onChange={handleInputChange} className="w-full px-5 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" required />
+                        <div className="relative group">
+                          <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                          <input name="fechaNacimiento" type="date" value={formData.fechaNacimiento} onChange={handleInputChange} className="w-full pl-12 pr-4 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" required />
+                        </div>
+                        <div className="relative group">
+                          <Phone className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                          <input name="telefonoCelular" type="tel" placeholder="55 1234 5678" value={formData.telefonoCelular} onChange={handleInputChange} className="w-full pl-12 pr-4 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" required />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 pt-4">
+                        <span className="text-[10px] font-black text-slate-700 uppercase tracking-[0.3em]">Perfil de Trabajo</span>
+                        <div className="flex-1 h-px bg-white/5" />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="relative group">
+                          <Users className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                          <input name="supervisorAsignado" type="text" placeholder="Nombre del Supervisor" value={formData.supervisorAsignado} onChange={handleInputChange} className="w-full pl-12 pr-4 py-4 bg-white/5 border border-white/5 rounded-2xl text-white text-sm focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" required />
+                        </div>
+                        <div className="relative group">
+                          <Briefcase className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                          <select name="puestoActual" value={formData.puestoActual} onChange={handleInputChange} className="w-full pl-12 pr-4 py-4 bg-slate-900 border border-white/5 rounded-2xl text-white text-sm appearance-none focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all">
+                            <option value="capacitacion">Capacitación</option>
+                            <option value="asesor">Asesor</option>
+                            <option value="supervisor">Supervisor</option>
+                            <option value="asistente_gerente">Asistente Gerente</option>
+                            <option value="gerente">Gerente</option>
+                            <option value="reclutadora">Reclutadora</option>
+                            <option value="administradora">Administradora</option>
+                          </select>
+                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
                 </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
-        <div className="mt-8 relative z-10 border-t border-white/5 pt-5">
-          {isReset ? (
-            <div className="text-center">
-              <button
-                onClick={() => { setIsLogin(true); setIsReset(false); setError(''); }}
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors font-black uppercase tracking-[0.2em]"
-              >
-                ← Volver al Portal de Acceso
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-center gap-4">
-              <button
-                onClick={() => { setIsReset(true); setError(''); }}
-                className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors font-medium uppercase tracking-widest whitespace-nowrap"
-              >
-                ¿Problemas con tu acceso?
-              </button>
-              <span className="w-px h-3 bg-white/10 shrink-0" />
-              <button
-                onClick={() => { setIsLogin(!isLogin); setError(''); }}
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors font-black uppercase tracking-[0.15em] whitespace-nowrap"
-              >
-                {isLogin ? '¿Nuevo aquí?' : '← Iniciar Sesión'}
-              </button>
-            </div>
-          )}
-        </div>
-      </motion.div>
+                {/* Submission & Footer */}
+                <div className="pt-6 space-y-6">
+                  {isLogin && (
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-3 cursor-pointer group">
+                        <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="w-4 h-4 rounded border-white/10 bg-white/5 text-blue-500 focus:ring-0 transition-all" />
+                        <span className="text-xs text-slate-500 group-hover:text-slate-300 font-bold uppercase tracking-widest transition-colors">Recordar acceso</span>
+                      </label>
+                      <button type="button" onClick={() => setIsReset(true)} className="text-xs text-slate-500 hover:text-blue-400 font-bold uppercase tracking-widest transition-colors">¿Problemas?</button>
+                    </div>
+                  )}
 
-      {/* Sparkles at bottom of login page — lazy (Three.js) */}
-      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-48 overflow-hidden [mask-image:radial-gradient(60%_60%,white,transparent)]">
-        <div className="absolute inset-0 before:absolute before:inset-0 before:bg-[radial-gradient(circle_at_bottom_center,#3b82f6,transparent_70%)] before:opacity-25" />
-        <div className="absolute -left-1/2 top-1/2 aspect-[1/0.7] z-10 w-[200%] rounded-[100%] border-t border-blue-500/10 bg-slate-950/20" />
-        <Suspense fallback={null}>
-          <Sparkles
-            density={500}
-            color="#93c5fd"
-            speed={0.5}
-            opacity={0.7}
-            size={1}
-            className="absolute inset-x-0 bottom-0 h-full w-full [mask-image:radial-gradient(50%_60%,white,transparent_85%)]"
-          />
-        </Suspense>
+                  <AuroraButton
+                    type="submit"
+                    disabled={loading}
+                    wrapperClassName="w-full"
+                    className="w-full justify-center py-5 text-base font-black uppercase tracking-[0.2em] shadow-[0_10px_30px_rgba(59,130,246,0.3)]"
+                    glowClassName="from-blue-600 via-cyan-400 to-indigo-600"
+                  >
+                    {loading ? <Loader2 className="w-6 h-6 animate-spin" /> : (isReset ? 'Recuperar' : (isLogin ? 'Entrar al Sistema' : 'Completar Registro'))}
+                  </AuroraButton>
+
+                  {isLogin && bioSupport?.platform && bioRegistered && (
+                    <button
+                      type="button"
+                      onClick={handleBiometricLogin}
+                      disabled={bioLoading}
+                      className="w-full py-4 rounded-2xl border border-white/5 bg-white/5 hover:bg-white/10 flex items-center justify-center gap-4 transition-all group"
+                    >
+                      <Fingerprint className="w-6 h-6 text-blue-400 group-hover:scale-110 transition-transform" />
+                      <span className="text-sm font-black text-white uppercase tracking-widest">Acceso Biométrico</span>
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+          </div>
+        </motion.div>
+
+        {/* Footer Disclaimer */}
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 0.3 }}
+          transition={{ delay: 2 }}
+          className="mt-12 text-[10px] text-slate-500 font-bold uppercase tracking-[0.6em] text-center"
+        >
+          © 2026 Heavenly Dreams SAS de CV • Elite Management
+        </motion.p>
       </div>
+
+      {/* Biometric Modal Overlay */}
+      <AnimatePresence>
+        {showBioModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-xl flex items-center justify-center p-6">
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="bg-zinc-900 border border-white/10 rounded-[3rem] p-10 max-w-sm w-full text-center space-y-8 shadow-[0_0_100px_rgba(59,130,246,0.2)]">
+              <div className="relative inline-block">
+                <Fingerprint className="w-20 h-20 text-blue-400" />
+                <div className="absolute -inset-4 bg-blue-500/20 blur-2xl -z-10" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-2xl font-black text-white uppercase">Biometría</h3>
+                <p className="text-slate-400 text-sm">Entra al sistema sin contraseñas en este dispositivo.</p>
+              </div>
+              <div className="space-y-3">
+                <button onClick={handleActivateBiometric} className="w-full py-5 bg-blue-600 text-white font-black rounded-2xl uppercase tracking-widest hover:bg-blue-500 shadow-lg shadow-blue-600/20 transition-all">Activar Ahora</button>
+                <button onClick={() => { setShowBioModal(false); login(lastLoggedUser); }} className="text-slate-500 text-[10px] font-black uppercase tracking-widest hover:text-white transition-colors">Omitir por ahora</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

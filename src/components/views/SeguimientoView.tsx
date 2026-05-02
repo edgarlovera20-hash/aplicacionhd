@@ -120,7 +120,7 @@ export default function SeguimientoView({ onBack, onClearRole }: Props) {
         {/* Logout */}
         <div className="p-3 border-t border-white/5 shrink-0">
           <button
-            onClick={onBack}
+            onClick={() => { if (window.confirm('¿Cerrar sesión? Se perderán los cambios no guardados.')) onBack(); }}
             className="flex items-center gap-2 w-full px-3 py-2.5 text-xs font-bold text-slate-400 hover:text-white hover:bg-red-500/10 rounded-xl transition-all duration-300"
           >
             <LogOut className="w-4 h-4" />
@@ -135,11 +135,11 @@ export default function SeguimientoView({ onBack, onClearRole }: Props) {
         <header className="h-14 bg-transparent flex items-center justify-between px-5 shrink-0 border-b border-white/5">
           <div className="flex items-center gap-3">
             <button
-              onClick={onBack}
+              onClick={onClearRole}
               className="flex items-center gap-1.5 text-slate-400 hover:text-white transition-all bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-lg border border-white/5"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-bold uppercase tracking-widest">Atrás</span>
+              <span className="text-[10px] font-bold uppercase tracking-widest">Módulos</span>
             </button>
 
             {/* Dept badge */}

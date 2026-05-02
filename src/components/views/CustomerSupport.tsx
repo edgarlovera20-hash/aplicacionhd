@@ -296,38 +296,55 @@ export default function CustomerSupport() {
 
       {/* Pagination Controls */}
       {totalPages > 1 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-900/40 backdrop-blur-md border border-white/10 rounded-2xl p-4 shadow-xl">
-          <p className="text-sm text-slate-400">
-            Mostrando <span className="font-medium text-white">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-medium text-white">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> de <span className="font-medium text-white">{filteredData.length}</span> tickets
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-6 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl p-5 shadow-2xl">
+          <p className="text-sm text-slate-400 whitespace-nowrap order-2 lg:order-1">
+            Mostrando <span className="font-black text-white">{(currentPage - 1) * itemsPerPage + 1}</span> a <span className="font-black text-white">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> de <span className="font-black text-white">{filteredData.length}</span> tickets
           </p>
-          <div className="flex items-center gap-2">
+          
+          <div className="flex items-center gap-3 order-1 lg:order-2 overflow-x-auto pb-2 lg:pb-0 max-w-full custom-scrollbar">
             <button 
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-white/5"
             >
               Anterior
             </button>
-            <div className="flex items-center gap-1">
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                <button
-                  key={page}
-                  onClick={() => setCurrentPage(page)}
-                  className={cn(
-                    "w-8 h-8 rounded-lg text-sm font-medium transition-colors flex items-center justify-center",
-                    currentPage === page 
-                      ? "bg-indigo-600 text-white" 
-                      : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                  )}
-                >
-                  {page}
-                </button>
-              ))}
+            
+            <div className="flex items-center gap-1.5">
+              {(() => {
+                const pages = [];
+                const delta = 2;
+                const left = currentPage - delta;
+                const right = currentPage + delta;
+                
+                for (let i = 1; i <= totalPages; i++) {
+                  if (i === 1 || i === totalPages || (i >= left && i <= right)) {
+                    pages.push(
+                      <button
+                        key={i}
+                        onClick={() => setCurrentPage(i)}
+                        className={cn(
+                          "w-10 h-10 rounded-xl text-xs font-bold transition-all flex items-center justify-center border",
+                          currentPage === i 
+                            ? "bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-500/20 scale-110" 
+                            : "bg-slate-800/50 text-slate-400 border-white/5 hover:bg-slate-700 hover:text-white"
+                        )}
+                      >
+                        {i}
+                      </button>
+                    );
+                  } else if (i === left - 1 || i === right + 1) {
+                    pages.push(<span key={i} className="text-slate-600 px-1">...</span>);
+                  }
+                }
+                return pages;
+              })()}
             </div>
+
             <button 
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all border border-white/5"
             >
               Siguiente
             </button>
