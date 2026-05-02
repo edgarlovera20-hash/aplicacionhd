@@ -52,6 +52,10 @@ COPY --from=builder /app/build ./build
 
 # Backend compilado (bundle único, no necesita tsx ni tsc en runtime)
 COPY --from=builder /app/dist ./dist
+# Copiar únicamente los archivos necesarios para el servidor
+COPY server.ts ./
+COPY tsconfig.json ./
+COPY src/ ./src/
 
 # Migraciones SQL (leídas en runtime por migrate.ts vía process.cwd())
 COPY --from=builder /app/migrations ./migrations

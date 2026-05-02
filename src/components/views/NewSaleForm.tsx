@@ -613,6 +613,11 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
     try {
       const data = await api.post('/ocr', { image: base64, docType: type });
 
+      // Si el comprobante trae lat/lng, popular coordenadas para el mapa.
+      if (type === 'comprobante' && data.latitud && data.longitud) {
+        data.coordenadas = `${data.latitud}, ${data.longitud}`;
+      }
+
       // Comparar dirección INE vs comprobante cuando ya tenemos ambos datos.
       if (type === 'comprobante' && form.calle) {
         const ineAddr: AddressComponents = {
