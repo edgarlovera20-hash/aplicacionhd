@@ -12,7 +12,7 @@
 @layer base {
   :root {
     /* ── Base ──────────────────────────────────────────────── */
-    --background:         #020617;   /* slate-950 */
+    --background:         #020617;   /* slate-950 (Medium/Default) */
     --surface-1:          #0f172a;   /* slate-900  – cards */
     --surface-2:          #1e293b;   /* slate-800  – inputs */
     --foreground:         #f5f5f5;   /* near-white */
@@ -26,6 +26,37 @@
     --accent-glow:        rgba(139,92,246,0.35);
     --cyan:               #00ABDF;   /* HDreams cyan */
     --cyan-glow:          rgba(0,171,223,0.35);
+  }
+
+  [data-theme="dark"] {
+    --background:         #000000;   /* Pure black */
+    --surface-1:          #0a0a0a;
+    --surface-2:          #141414;
+    --glass:              rgba(0,0,0,0.85);
+  }
+
+  [data-theme="light"] {
+    --background:         #e0f2fe;   /* Light blue (Azul claro) */
+    --surface-1:          #bae6fd;
+    --surface-2:          #7dd3fc;
+    --foreground:         #0c4a6e;   /* Dark text for contrast */
+    --foreground-muted:   #0284c7;
+    --foreground-subtle:  #0369a1;
+    --glass:              rgba(255,255,255,0.7);
+    --glass-border:       rgba(0,0,0,0.1);
+    --shadow-card:        0 8px 32px 0 rgba(0,0,0,0.1);
+  }
+
+  /* Map tailwind defaults to use variables so hardcoded classes respond to theme */
+  @theme {
+    --color-slate-950: var(--background);
+    --color-slate-900: var(--surface-1);
+    --color-slate-800: var(--surface-2);
+    --color-slate-50: var(--foreground);
+    --color-slate-400: var(--foreground-muted);
+  }
+
+  :root {
 
     /* ── Semantic ───────────────────────────────────────────── */
     --success:            #00C853;   /* installations / active */

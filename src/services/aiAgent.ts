@@ -56,6 +56,39 @@ REGLAS:
       return "Hubo un error al conectar con el agente de IA (ChatGPT). Por favor, asegúrate de haber configurado la API Key.";
     }
   }
+
+  public async analyzeExpediente(docs: {
+    hasIne?: boolean,
+    hasCurp?: boolean,
+    hasAddress?: boolean,
+    hasSignedDoc?: boolean,
+    hasVideoSignature?: boolean,
+    hasAudioCall?: boolean,
+    hasPortability?: boolean,
+    isPortabilityClient: boolean,
+    hasFolioSica?: boolean
+  }): Promise<{ status: 'completo' | 'incompleto', message: string }> {
+    const missing = [];
+    if (!docs.hasIne && !docs.hasCurp) missing.push("Identificación (INE o CURP)");
+    if (!docs.hasAddress) missing.push("Comprobante de Domicilio");
+    if (!docs.hasSignedDoc) missing.push("Formato de Contrato Firmado");
+    if (!docs.hasVideoSignature) missing.push("Video de Firma");
+    if (!docs.hasAudioCall) missing.push("Grabación de Llamada de Validación");
+    if (!docs.hasFolioSica) missing.push("Captura de Folio SIAC");
+    if (docs.isPortabilityClient && !docs.hasPortability) missing.push("Anexo de Portabilidad");
+
+    if (missing.length === 0) {
+      return {
+        status: 'completo',
+        message: "El expediente cumple con todos los requisitos de seguridad y respaldo documental de Heavenly Dreams."
+      };
+    } else {
+      return {
+        status: 'incompleto',
+        message: `Faltan los siguientes documentos obligatorios: ${missing.join(", ")}. Por favor, completa el expediente para proceder.`
+      };
+    }
+  }
 }
 
 export const aiAgent = new CRM_AI_Agent();

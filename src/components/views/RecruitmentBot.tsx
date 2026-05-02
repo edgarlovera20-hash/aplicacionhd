@@ -11,13 +11,15 @@ import { sendWhatsApp, formatMxNumber, MESSAGE_TEMPLATES } from '../../services/
 
 // ── Types ─────────────────────────────────────────────────────────────────
 type Profile = 'volantero' | 'ayudante' | 'asesor' | 'supervisor' | 'rechazado' | 'pendiente';
-type Stage   = 'nuevo' | 'interesado' | 'perfilado' | 'apto' | 'agendado' | 'confirmado' | 'no_show' | 'contratado';
+type Stage = 'interesado' | 'agendo' | 'confirmocita' | 'confirmodd' | 'bienvenida' | 'no_show';
 
 interface BotMessage { role: 'bot' | 'user'; text: string; ts: string; }
 interface Candidate {
   id: string; phone: string; name: string; age: number; experience: string;
   profile: Profile; stage: Stage; assignedAgent: number;
   folio: string; notes: string; appointmentDate: string; appointmentTime: string;
+  interviewer: string;   // QUIEN LO ENTREVISTÓ
+  vacancy: string;       // A QUÉ VACANTE VIENE
   messages: BotMessage[]; createdAt: string;
   needsHuman?: boolean;     // Flagged for human attention
   humanReason?: string;     // Why escalation was triggered
@@ -25,31 +27,29 @@ interface Candidate {
 
 // ── Config ────────────────────────────────────────────────────────────────
 const STAGES: { id: Stage; label: string; color: string; icon: string }[] = [
-  { id: 'nuevo',      label: 'Nuevo Lead',   color: 'slate',  icon: '🆕' },
-  { id: 'interesado', label: 'Interesado',   color: 'blue',   icon: '💬' },
-  { id: 'perfilado',  label: 'Perfilado',    color: 'violet', icon: '🧠' },
-  { id: 'apto',       label: 'Apto',         color: 'cyan',   icon: '✅' },
-  { id: 'agendado',   label: 'Agendado',     color: 'amber',  icon: '📅' },
-  { id: 'confirmado', label: 'Confirmado',   color: 'emerald',icon: '✔️' },
-  { id: 'no_show',    label: 'No Show',      color: 'red',    icon: '🚫' },
-  { id: 'contratado', label: 'Contratado',   color: 'green',  icon: '🌟' },
+  { id: 'interesado', label: 'INTERESADO', color: 'blue', icon: '💬' },
+  { id: 'agendo', label: 'AGENDÓ', color: 'amber', icon: '📅' },
+  { id: 'confirmocita', label: 'CONFIRMÓ LA CITA', color: 'emerald', icon: '✅' },
+  { id: 'confirmodd', label: 'CONFIRMÓ DE D,DO', color: 'violet', icon: '🧠' },
+  { id: 'bienvenida', label: 'BIENVENIDA', color: 'green', icon: '🌟' },
+  { id: 'no_show', label: 'NO SHOW', color: 'red', icon: '🚫' },
 ];
 
 const PROFILES: Record<Profile, { label: string; color: string; salary: string; age: string; emoji: string }> = {
-  volantero:  { label: 'Volantero/Embajador', color: 'yellow', salary: '$2,000/sem',  age: '16-25', emoji: '📢' },
-  ayudante:   { label: 'Ayudante General',    color: 'blue',   salary: '$2,100/sem',  age: '18-35', emoji: '📦' },
-  asesor:     { label: 'Asesor Comercial',    color: 'green',  salary: '$2,300/sem',  age: '18-35', emoji: '💼' },
-  supervisor: { label: 'Supervisor de Área',  color: 'purple', salary: '$2,600/sem',  age: '18-35', emoji: '🎖️' },
-  rechazado:  { label: 'No Aplica',           color: 'red',    salary: '—',           age: '<16/>35',emoji: '❌' },
-  pendiente:  { label: 'Sin Perfil',          color: 'slate',  salary: '—',           age: '—',     emoji: '⏳' },
+  volantero: { label: 'Volantero/Embajador', color: 'yellow', salary: '$2,000/sem', age: '16-25', emoji: '📢' },
+  ayudante: { label: 'Ayudante General', color: 'blue', salary: '$2,100/sem', age: '18-35', emoji: '📦' },
+  asesor: { label: 'Asesor Comercial', color: 'green', salary: '$2,300/sem', age: '18-35', emoji: '💼' },
+  supervisor: { label: 'Supervisor de Área', color: 'purple', salary: '$2,600/sem', age: '18-35', emoji: '🎖️' },
+  rechazado: { label: 'No Aplica', color: 'red', salary: '—', age: '<16/>35', emoji: '❌' },
+  pendiente: { label: 'Sin Perfil', color: 'slate', salary: '—', age: '—', emoji: '⏳' },
 };
 
 const AGENTS = [
-  { id: 1, name: 'Agente 1', style: 'Formal',      color: 'blue',   avatar: '👔' },
-  { id: 2, name: 'Agente 2', style: 'Amigable',    color: 'emerald',avatar: '😊' },
-  { id: 3, name: 'Agente 3', style: 'Energético',  color: 'amber',  avatar: '⚡' },
-  { id: 4, name: 'Agente 4', style: 'Empático',    color: 'violet', avatar: '🤝' },
-  { id: 5, name: 'Agente 5', style: 'Eficiente',   color: 'cyan',   avatar: '🎯' },
+  { id: 1, name: 'Agente 1', style: 'Formal', color: 'blue', avatar: '👔' },
+  { id: 2, name: 'Agente 2', style: 'Amigable', color: 'emerald', avatar: '😊' },
+  { id: 3, name: 'Agente 3', style: 'Energético', color: 'amber', avatar: '⚡' },
+  { id: 4, name: 'Agente 4', style: 'Empático', color: 'violet', avatar: '🤝' },
+  { id: 5, name: 'Agente 5', style: 'Eficiente', color: 'cyan', avatar: '🎯' },
 ];
 
 const FAQS = [
@@ -101,18 +101,18 @@ const api = {
 };
 
 function genFolio() { return 'HD-' + Math.floor(100000 + Math.random() * 900000); }
-function genId()    { return 'CAND-' + Date.now(); }
+function genId() { return 'CAND-' + Date.now(); }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
 export default function RecruitmentBot() {
-  const [tab, setTab]               = useState<'pipeline'|'simulator'|'faq'|'agents'>('pipeline');
+  const [tab, setTab] = useState<'pipeline' | 'simulator' | 'faq' | 'agents'>('pipeline');
   const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [search, setSearch]         = useState('');
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const [filterAgent, setFilterAgent] = useState(0);
-  const [selected, setSelected]     = useState<Candidate | null>(null);
+  const [selected, setSelected] = useState<Candidate | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
 
   useEffect(() => { loadCandidates(); }, []);
@@ -148,22 +148,22 @@ export default function RecruitmentBot() {
 
   const moveStage = (cand: Candidate, stage: Stage) => {
     const updated = { ...cand, stage };
-    if (stage === 'confirmado' && !cand.folio) updated.folio = genFolio();
+    if (stage === 'confirmocita' && !cand.folio) updated.folio = genFolio();
     saveCandidate(updated);
     if (selected?.id === cand.id) setSelected(updated);
   };
 
   const filtered = candidates.filter(c => {
     const matchSearch = !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search);
-    const matchAgent  = !filterAgent || c.assignedAgent === filterAgent;
+    const matchAgent = !filterAgent || c.assignedAgent === filterAgent;
     return matchSearch && matchAgent;
   });
 
   const stats = {
-    total:      candidates.length,
-    contratados: candidates.filter(c => c.stage === 'contratado').length,
-    agendados:  candidates.filter(c => ['agendado','confirmado'].includes(c.stage)).length,
-    conversion: candidates.length ? Math.round((candidates.filter(c => c.stage === 'contratado').length / candidates.length) * 100) : 0,
+    total: candidates.length,
+    contratados: candidates.filter(c => c.stage === 'bienvenida').length,
+    agendados: candidates.filter(c => ['agendo', 'confirmocita'].includes(c.stage)).length,
+    conversion: candidates.length ? Math.round((candidates.filter(c => c.stage === 'bienvenida').length / candidates.length) * 100) : 0,
     needsHuman: candidates.filter(c => c.needsHuman).length,
   };
 
@@ -191,11 +191,11 @@ export default function RecruitmentBot() {
       {/* Stats bar */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         {[
-          { label: 'Total Leads',   value: stats.total,      icon: Users,       color: 'blue'    },
-          { label: 'Agendados',     value: stats.agendados,  icon: Calendar,    color: 'amber'   },
-          { label: 'Contratados',   value: stats.contratados,icon: Star,        color: 'emerald' },
-          { label: 'Conversión',    value: `${stats.conversion}%`, icon: TrendingUp, color: 'violet' },
-          { label: '⚠️ Atención',   value: stats.needsHuman, icon: AlertTriangle, color: stats.needsHuman > 0 ? 'red' : 'slate' },
+          { label: 'Total Leads', value: stats.total, icon: Users, color: 'blue' },
+          { label: 'Agendados', value: stats.agendados, icon: Calendar, color: 'amber' },
+          { label: 'Contratados', value: stats.contratados, icon: Star, color: 'emerald' },
+          { label: 'Conversión', value: `${stats.conversion}%`, icon: TrendingUp, color: 'violet' },
+          { label: '⚠️ Atención', value: stats.needsHuman, icon: AlertTriangle, color: stats.needsHuman > 0 ? 'red' : 'slate' },
         ].map(s => (
           <div key={s.label} className={`bg-slate-900/60 border rounded-2xl p-3 ${s.label.includes('Atención') && stats.needsHuman > 0 ? 'border-red-500/40 bg-red-900/20' : 'border-white/8'}`}>
             <div className="flex items-center gap-2 mb-1">
@@ -210,17 +210,16 @@ export default function RecruitmentBot() {
       {/* Tab nav */}
       <div className="flex gap-1 p-1 bg-slate-900/50 border border-white/5 rounded-2xl w-fit overflow-x-auto hide-scrollbar">
         {([
-          ['pipeline',  '📋 Pipeline',   'pipeline'],
-          ['simulator', '🤖 Bot Flujo',  'simulator'],
-          ['faq',       '❓ FAQ',         'faq'],
-          ['agents',    '👥 Agentes',    'agents'],
+          ['pipeline', '📋 Pipeline', 'pipeline'],
+          ['simulator', '🤖 Bot Flujo', 'simulator'],
+          ['faq', '❓ FAQ', 'faq'],
+          ['agents', '👥 Agentes', 'agents'],
         ] as [typeof tab, string, string][]).map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              tab === id ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-            }`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${tab === id ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+              }`}
           >
             {label}
           </button>
@@ -374,12 +373,21 @@ function CandidateCard({ candidate: c, onSelect, onMove, onDelete }: {
             <Phone className="w-2.5 h-2.5" />{c.phone}
           </p>
         </div>
-        <button
-          onClick={e => { e.stopPropagation(); onDelete(c.id); }}
-          className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-600 hover:text-red-400 transition-all"
-        >
-          <Trash2 className="w-3 h-3" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={e => { e.stopPropagation(); window.open(`https://wa.me/${formatMxNumber(c.phone)}`, '_blank'); }}
+            className="p-1 text-green-500 hover:bg-green-500/10 rounded-lg transition-all"
+            title="Iniciar WhatsApp"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={e => { e.stopPropagation(); onDelete(c.id); }}
+            className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-600 hover:text-red-400 transition-all"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
       </div>
 
       {c.profile !== 'pendiente' && (
@@ -413,11 +421,16 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
   onSave: (c: Candidate) => void;
   onMove: (c: Candidate, s: Stage) => void;
 }) {
-  const [activeSection, setActiveSection] = useState<'info'|'chat'|'send'>('info');
+  const [activeSection, setActiveSection] = useState<'info' | 'chat' | 'send'>('info');
   const [waMsgIdx, setWaMsgIdx] = useState(0);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<string>('');
   const [editNotes, setEditNotes] = useState(c.notes);
+  const [editInterviewer, setEditInterviewer] = useState(c.interviewer || '');
+  const [editVacancy, setEditVacancy] = useState(c.vacancy || '');
+  const [editAppDate, setEditAppDate] = useState(c.appointmentDate || '');
+  const [editAppTime, setEditAppTime] = useState(c.appointmentTime || '09:30');
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const prof = PROFILES[c.profile];
 
@@ -425,10 +438,10 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
 
   const waTemplates = [
     { label: 'Confirmar perfil', msg: `¡Hola ${c.name || 'candidato'}! 👋 Hemos revisado tu perfil y eres apto para la vacante de *${prof.label}* con sueldo de ${prof.salary}. ¿Te interesa avanzar al proceso de entrevista? Responde *SÍ* para agendar.` },
-    { label: 'Enviar cita',      msg: `¡Hola ${c.name || ''}! Tu entrevista está agendada para mañana a las 9:30 AM.\n📍 Av. Tláhuac 3632, int 301, Col. Culhuacán, Iztapalapa\n🗺️ Metro Culhuacán (Línea 12)\n\nTu folio de acceso: *${c.folio || genFolio()}*\n\nRecuerda traer: CV, INE y comprobante de domicilio. ¡Te esperamos! ✅` },
-    { label: 'Recordatorio',     msg: `¡Hola ${c.name || ''}! 🔔 Te recordamos que *mañana* tienes entrevista con Heavenly Dreams a las 9:30 AM en Av. Tláhuac 3632 int 301 (Metro Culhuacán). Por favor confirma con *VOY EN CAMINO*. ¡Te esperamos!` },
-    { label: 'No show',          msg: `Hola ${c.name || ''}, notamos que no pudiste presentarte hoy. ¿Te gustaría reagendar? Tenemos horarios disponibles mañana a las 10:00 AM, 1:00 PM o 4:00 PM. Responde con el número de horario que prefieras. 🙏` },
-    { label: 'Reactivación',     msg: `¡Hola ${c.name || ''}! 👋 Seguimos con vacantes disponibles en Heavenly Dreams para ventas Telmex. Pago semanal + bonos + capacitación pagada. ¿Aún te interesa? Responde *1* para entrevista o *2* para más info.` },
+    { label: 'Enviar cita', msg: `¡Hola ${c.name || ''}! Tu entrevista está agendada para mañana a las 9:30 AM.\n📍 Av. Tláhuac 3632, int 301, Col. Culhuacán, Iztapalapa\n🗺️ Metro Culhuacán (Línea 12)\n\nTu folio de acceso: *${c.folio || genFolio()}*\n\nRecuerda traer: CV, INE y comprobante de domicilio. ¡Te esperamos! ✅` },
+    { label: 'Recordatorio', msg: `¡Hola ${c.name || ''}! 🔔 Te recordamos que *mañana* tienes entrevista con Heavenly Dreams a las 9:30 AM en Av. Tláhuac 3632 int 301 (Metro Culhuacán). Por favor confirma con *VOY EN CAMINO*. ¡Te esperamos!` },
+    { label: 'No show', msg: `Hola ${c.name || ''}, notamos que no pudiste presentarte hoy. ¿Te gustaría reagendar? Tenemos horarios disponibles mañana a las 10:00 AM, 1:00 PM o 4:00 PM. Responde con el número de horario que prefieras. 🙏` },
+    { label: 'Reactivación', msg: `¡Hola ${c.name || ''}! 👋 Seguimos con vacantes disponibles en Heavenly Dreams para ventas Telmex. Pago semanal + bonos + capacitación pagada. ¿Aún te interesa? Responde *1* para entrevista o *2* para más info.` },
   ];
 
   const handleSendWA = async () => {
@@ -490,11 +503,10 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
                 <button
                   key={s.id}
                   onClick={() => onMove(c, s.id)}
-                  className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all border ${
-                    c.stage === s.id
+                  className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all border ${c.stage === s.id
                       ? `bg-${s.color}-500/20 text-${s.color}-400 border-${s.color}-500/40`
                       : 'border-white/5 text-slate-500 hover:text-slate-300'
-                  }`}
+                    }`}
                 >
                   {s.icon} {s.label}
                 </button>
@@ -505,7 +517,7 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
 
         {/* Sub-tabs */}
         <div className="flex border-b border-white/8">
-          {(['info','chat','send'] as const).map(s => (
+          {(['info', 'chat', 'send'] as const).map(s => (
             <button
               key={s}
               onClick={() => setActiveSection(s)}
@@ -537,21 +549,42 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
                   </div>
                 </div>
               )}
-
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { label: 'Edad',         value: c.age ? `${c.age} años` : '—' },
-                  { label: 'Experiencia',  value: c.experience || '—' },
-                  { label: 'Folio',        value: c.folio || '(sin folio)' },
-                  { label: 'Agente',       value: AGENTS.find(a => a.id === c.assignedAgent)?.name || '—' },
-                  { label: 'Cita',         value: c.appointmentDate ? `${c.appointmentDate} ${c.appointmentTime}` : 'No agendada' },
-                  { label: 'Registro',     value: c.createdAt ? new Date(c.createdAt).toLocaleDateString('es-MX') : '—' },
-                ].map(f => (
-                  <div key={f.label} className="bg-slate-800/40 rounded-xl p-2.5">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'Edad', value: c.age ? `${c.age} años` : '—' },
+                { label: 'Experiencia', value: c.experience || '—' },
+                { label: 'Folio', value: c.folio || '(sin folio)' },
+                { label: 'Agente', value: AGENTS.find(a => a.id === c.assignedAgent)?.name || '—' },
+                { label: 'Registro', value: c.createdAt ? new Date(c.createdAt).toLocaleDateString('es-MX') : '—' },
+              ].map(f => (
+                <div key={f.label} className="bg-slate-800/40 rounded-xl p-2.5">
                     <p className="text-[9px] text-slate-500 uppercase tracking-wider">{f.label}</p>
                     <p className="text-xs font-bold text-slate-200 mt-0.5 truncate">{f.value}</p>
                   </div>
                 ))}
+              </div>
+
+              {/* CRM Reclutamiento - Campos Específicos */}
+              <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-4 space-y-3">
+                <p className="text-[10px] text-blue-400 font-bold uppercase tracking-wider">Detalles de la Entrevista</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[9px] text-slate-500 uppercase">Día de Cita</label>
+                    <input type="date" value={editAppDate} onChange={e => setEditAppDate(e.target.value)} className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-slate-500 uppercase">Hora de Cita</label>
+                    <input type="time" value={editAppTime} onChange={e => setEditAppTime(e.target.value)} className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white" />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-500 uppercase">Quién lo Entrevistó</label>
+                  <input type="text" value={editInterviewer} onChange={e => setEditInterviewer(e.target.value)} placeholder="Nombre del entrevistador..." className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white" />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-500 uppercase">Vacante</label>
+                  <input type="text" value={editVacancy} onChange={e => setEditVacancy(e.target.value)} placeholder="Puesto al que aplica..." className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white" />
+                </div>
               </div>
 
               <div>
@@ -564,80 +597,80 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
                   placeholder="Observaciones del agente..."
                 />
                 <button
-                  onClick={handleSaveNotes}
+                  onClick={() => onSave({ ...c, notes: editNotes, interviewer: editInterviewer, vacancy: editVacancy, appointmentDate: editAppDate, appointmentTime: editAppTime })}
                   className="mt-2 flex items-center gap-1 px-3 py-1.5 bg-green-600/80 hover:bg-green-500 text-white text-[11px] font-bold rounded-lg transition-all"
                 >
-                  <Save className="w-3 h-3" /> Guardar notas
+                  <Save className="w-3 h-3" /> Guardar cambios
                 </button>
               </div>
             </div>
           )}
 
-          {/* CHAT */}
-          {activeSection === 'chat' && (
-            <div className="space-y-2">
-              {c.messages.length === 0 && (
-                <div className="text-center py-8 text-slate-500 text-xs">Sin mensajes registrados</div>
-              )}
-              {c.messages.map((m, i) => (
-                <div key={i} className={`flex gap-2 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs ${m.role === 'bot' ? 'bg-green-600/30 text-green-400' : 'bg-slate-700 text-slate-300'}`}>
-                    {m.role === 'bot' ? '🤖' : '👤'}
-                  </div>
-                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${m.role === 'bot' ? 'bg-slate-800 text-slate-200 border border-white/5' : 'bg-green-600/80 text-white'}`}>
-                    {m.text}
-                    <p className={`text-[8px] mt-1 ${m.role === 'bot' ? 'text-slate-600' : 'text-green-200/60'}`}>
-                      {m.ts ? new Date(m.ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : ''}
-                    </p>
-                  </div>
+        {/* CHAT */}
+        {activeSection === 'chat' && (
+          <div className="space-y-2">
+            {c.messages.length === 0 && (
+              <div className="text-center py-8 text-slate-500 text-xs">Sin mensajes registrados</div>
+            )}
+            {c.messages.map((m, i) => (
+              <div key={i} className={`flex gap-2 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs ${m.role === 'bot' ? 'bg-green-600/30 text-green-400' : 'bg-slate-700 text-slate-300'}`}>
+                  {m.role === 'bot' ? '🤖' : '👤'}
                 </div>
+                <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap ${m.role === 'bot' ? 'bg-slate-800 text-slate-200 border border-white/5' : 'bg-green-600/80 text-white'}`}>
+                  {m.text}
+                  <p className={`text-[8px] mt-1 ${m.role === 'bot' ? 'text-slate-600' : 'text-green-200/60'}`}>
+                    {m.ts ? new Date(m.ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : ''}
+                  </p>
+                </div>
+              </div>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+        )}
+
+        {/* SEND WHATSAPP */}
+        {activeSection === 'send' && (
+          <div className="space-y-3">
+            <p className="text-[10px] text-slate-400">Selecciona la plantilla y envía por WhatsApp:</p>
+
+            <div className="space-y-2">
+              {waTemplates.map((t, i) => (
+                <button
+                  key={i}
+                  onClick={() => setWaMsgIdx(i)}
+                  className={`w-full text-left px-3 py-2 rounded-xl border text-xs transition-all ${waMsgIdx === i ? 'bg-green-500/15 border-green-500/40 text-green-300' : 'bg-slate-800/40 border-white/8 text-slate-400 hover:text-slate-200'}`}
+                >
+                  <p className="font-bold">{t.label}</p>
+                </button>
               ))}
-              <div ref={chatEndRef} />
             </div>
-          )}
 
-          {/* SEND WHATSAPP */}
-          {activeSection === 'send' && (
-            <div className="space-y-3">
-              <p className="text-[10px] text-slate-400">Selecciona la plantilla y envía por WhatsApp:</p>
-
-              <div className="space-y-2">
-                {waTemplates.map((t, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setWaMsgIdx(i)}
-                    className={`w-full text-left px-3 py-2 rounded-xl border text-xs transition-all ${waMsgIdx === i ? 'bg-green-500/15 border-green-500/40 text-green-300' : 'bg-slate-800/40 border-white/8 text-slate-400 hover:text-slate-200'}`}
-                  >
-                    <p className="font-bold">{t.label}</p>
-                  </button>
-                ))}
-              </div>
-
-              {/* Preview */}
-              <div className="bg-[#1a2332] border border-white/8 rounded-xl p-3">
-                <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">Vista previa</p>
-                <p className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">{waTemplates[waMsgIdx].msg}</p>
-              </div>
-
-              <button
-                onClick={handleSendWA}
-                disabled={sending}
-                className="w-full flex items-center justify-center gap-2 py-2.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-all"
-              >
-                {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageCircle className="w-4 h-4" />}
-                Enviar por WhatsApp
-              </button>
-
-              {sendResult && (
-                <p className={`text-xs text-center font-medium ${sendResult.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
-                  {sendResult}
-                </p>
-              )}
+            {/* Preview */}
+            <div className="bg-[#1a2332] border border-white/8 rounded-xl p-3">
+              <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">Vista previa</p>
+              <p className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">{waTemplates[waMsgIdx].msg}</p>
             </div>
-          )}
-        </div>
-      </motion.div>
+
+            <button
+              onClick={handleSendWA}
+              disabled={sending}
+              className="w-full flex items-center justify-center gap-2 py-2.5 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-all"
+            >
+              {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageCircle className="w-4 h-4" />}
+              Enviar por WhatsApp
+            </button>
+
+            {sendResult && (
+              <p className={`text-xs text-center font-medium ${sendResult.startsWith('✅') ? 'text-green-400' : 'text-red-400'}`}>
+                {sendResult}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </motion.div>
+    </motion.div >
   );
 }
 
@@ -645,10 +678,10 @@ function CandidateDetail({ candidate: c, onClose, onSave, onMove }: {
 // BOT SIMULATOR
 // ═══════════════════════════════════════════════════════════════════════════
 function BotSimulator() {
-  const [phase, setPhase]   = useState(0);
+  const [phase, setPhase] = useState(0);
   const [optIdx, setOptIdx] = useState(0);
-  const [input, setInput]   = useState('');
-  const [msgs, setMsgs]     = useState<{role:'bot'|'user';text:string}[]>([
+  const [input, setInput] = useState('');
+  const [msgs, setMsgs] = useState<{ role: 'bot' | 'user'; text: string }[]>([
     { role: 'bot', text: BOT_FLOW[0].bot },
   ]);
   const [loading, setLoading] = useState(false);
@@ -711,11 +744,10 @@ function BotSimulator() {
           <div className="bg-[#ECE5DD] h-96 overflow-y-auto p-3 space-y-2">
             {msgs.map((m, i) => (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] px-3 py-2 rounded-2xl text-[11px] leading-relaxed whitespace-pre-wrap shadow-sm ${
-                  m.role === 'bot'
+                <div className={`max-w-[80%] px-3 py-2 rounded-2xl text-[11px] leading-relaxed whitespace-pre-wrap shadow-sm ${m.role === 'bot'
                     ? 'bg-white text-gray-800 rounded-tl-sm'
                     : 'bg-[#DCF8C6] text-gray-800 rounded-tr-sm'
-                }`}>
+                  }`}>
                   {m.text}
                 </div>
               </div>
@@ -723,7 +755,7 @@ function BotSimulator() {
             {loading && (
               <div className="flex justify-start">
                 <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2 flex gap-1 shadow-sm">
-                  {[0,150,300].map(d => (
+                  {[0, 150, 300].map(d => (
                     <div key={d} className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
                   ))}
                 </div>
@@ -898,9 +930,9 @@ function AgentsPanel({ candidates }: { candidates: Candidate[] }) {
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
       {AGENTS.map(agent => {
         const agentCands = candidates.filter(c => c.assignedAgent === agent.id);
-        const contratados = agentCands.filter(c => c.stage === 'contratado').length;
-        const agendados   = agentCands.filter(c => ['agendado','confirmado'].includes(c.stage)).length;
-        const conversion  = agentCands.length ? Math.round((contratados / agentCands.length) * 100) : 0;
+        const contratados = agentCands.filter(c => c.stage === 'bienvenida').length;
+        const agendados = agentCands.filter(c => ['agendo', 'confirmocita'].includes(c.stage)).length;
+        const conversion = agentCands.length ? Math.round((contratados / agentCands.length) * 100) : 0;
 
         return (
           <div key={agent.id} className={`bg-slate-900/60 border border-${agent.color}-500/20 rounded-2xl p-5`}>
@@ -918,9 +950,9 @@ function AgentsPanel({ candidates }: { candidates: Candidate[] }) {
             {/* Stats */}
             <div className="grid grid-cols-3 gap-2 mb-4">
               {[
-                { label: 'Leads',      value: agentCands.length, color: agent.color },
-                { label: 'Agendados',  value: agendados,          color: 'amber'    },
-                { label: 'Conv. %',    value: `${conversion}%`,   color: 'emerald'  },
+                { label: 'Leads', value: agentCands.length, color: agent.color },
+                { label: 'Agendados', value: agendados, color: 'amber' },
+                { label: 'Conv. %', value: `${conversion}%`, color: 'emerald' },
               ].map(s => (
                 <div key={s.label} className="bg-slate-800/50 rounded-xl p-2 text-center">
                   <p className={`text-lg font-black text-${s.color}-400`}>{s.value}</p>
@@ -973,6 +1005,8 @@ function NewCandidateForm({ onClose, onSave }: { onClose: () => void; onSave: (c
     profile: 'pendiente' as Profile,
     assignedAgent: 1,
     notes: '',
+    interviewer: '',
+    vacancy: 'Asesor Comercial',
   });
 
   const handleSubmit = () => {
@@ -989,8 +1023,9 @@ function NewCandidateForm({ onClose, onSave }: { onClose: () => void; onSave: (c
     const candidate: Candidate = {
       id: genId(), phone: form.phone, name: form.name, age: ageNum,
       experience: form.experience, profile: form.profile !== 'pendiente' ? form.profile : autoProfile,
-      stage: 'nuevo', assignedAgent: form.assignedAgent,
+      stage: 'interesado', assignedAgent: form.assignedAgent,
       folio: '', notes: form.notes, appointmentDate: '', appointmentTime: '09:30',
+      interviewer: form.interviewer, vacancy: form.vacancy,
       messages: [], createdAt: new Date().toISOString(),
     };
     onSave(candidate);
@@ -1020,9 +1055,9 @@ function NewCandidateForm({ onClose, onSave }: { onClose: () => void; onSave: (c
 
         <div className="grid grid-cols-2 gap-3">
           {[
-            { key: 'name',       label: 'Nombre completo',  type: 'text',  placeholder: 'Ana Torres', full: true },
-            { key: 'phone',      label: 'Teléfono (WhatsApp)', type: 'tel', placeholder: '5512345678', full: false },
-            { key: 'age',        label: 'Edad',             type: 'number',placeholder: '24',          full: false },
+            { key: 'name', label: 'Nombre completo', type: 'text', placeholder: 'Ana Torres', full: true },
+            { key: 'phone', label: 'Teléfono (WhatsApp)', type: 'tel', placeholder: '5512345678', full: false },
+            { key: 'age', label: 'Edad', type: 'number', placeholder: '24', full: false },
           ].map(f => (
             <div key={f.key} className={f.full ? 'col-span-2' : ''}>
               <label className="block text-[10px] text-slate-400 mb-1 uppercase tracking-wider">{f.label}</label>
@@ -1035,6 +1070,29 @@ function NewCandidateForm({ onClose, onSave }: { onClose: () => void; onSave: (c
               />
             </div>
           ))}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[10px] text-slate-400 mb-1 uppercase tracking-wider">Vacante</label>
+            <input
+              type="text"
+              value={form.vacancy}
+              onChange={e => setForm(prev => ({ ...prev, vacancy: e.target.value }))}
+              placeholder="Ej: Asesor Comercial"
+              className="w-full bg-slate-800/60 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-green-500/50"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] text-slate-400 mb-1 uppercase tracking-wider">Entrevistador</label>
+            <input
+              type="text"
+              value={form.interviewer}
+              onChange={e => setForm(prev => ({ ...prev, interviewer: e.target.value }))}
+              placeholder="Quién entrevista..."
+              className="w-full bg-slate-800/60 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-green-500/50"
+            />
+          </div>
         </div>
 
         <div>
@@ -1097,12 +1155,12 @@ const UserPlus = ({ className }: { className?: string }) => (
 
 // ── Mock candidates for demo ───────────────────────────────────────────────
 const MOCK_CANDIDATES: Candidate[] = [
-  { id: 'c1', phone: '5512345678', name: 'María González',   age: 22, experience: 'Atención al cliente 1 año', profile: 'asesor',     stage: 'agendado',   assignedAgent: 1, folio: 'HD-001234', notes: 'Muy interesada, llegó puntual', appointmentDate: '2026-04-27', appointmentTime: '09:30', messages: [], createdAt: '2026-04-25T10:00:00Z' },
-  { id: 'c2', phone: '5598765432', name: 'Carlos Ramírez',   age: 19, experience: 'Sin experiencia',            profile: 'volantero',  stage: 'interesado', assignedAgent: 2, folio: '',          notes: '',                            appointmentDate: '',            appointmentTime: '09:30', messages: [], createdAt: '2026-04-25T11:00:00Z' },
-  { id: 'c3', phone: '5511223344', name: 'Ana Torres',       age: 28, experience: 'Supervisora 2 años',         profile: 'supervisor', stage: 'confirmado', assignedAgent: 3, folio: 'HD-005678', notes: 'Experiencia sólida en liderazgo', appointmentDate: '2026-04-26', appointmentTime: '09:30', messages: [], createdAt: '2026-04-24T09:00:00Z' },
-  { id: 'c4', phone: '5544332211', name: 'Luis Hernández',   age: 25, experience: 'Ventas Telmex 6 meses',      profile: 'asesor',     stage: 'contratado', assignedAgent: 1, folio: 'HD-003456', notes: 'Contratado el 20/04',          appointmentDate: '2026-04-20', appointmentTime: '09:30', messages: [], createdAt: '2026-04-18T08:00:00Z' },
-  { id: 'c5', phone: '5566778899', name: 'Sofía Mendoza',    age: 17, experience: 'Sin experiencia',            profile: 'volantero',  stage: 'nuevo',      assignedAgent: 4, folio: '',          notes: '',                            appointmentDate: '',            appointmentTime: '09:30', messages: [], createdAt: '2026-04-26T07:00:00Z' },
-  { id: 'c6', phone: '5533221100', name: 'Jorge Castillo',   age: 31, experience: 'Captura de datos 3 años',    profile: 'ayudante',   stage: 'perfilado',  assignedAgent: 5, folio: '',          notes: 'Muy organizado',              appointmentDate: '',            appointmentTime: '09:30', messages: [], createdAt: '2026-04-25T15:00:00Z' },
-  { id: 'c7', phone: '5577889900', name: 'Elena Morales',    age: 24, experience: 'Promotora 1 año',            profile: 'asesor',     stage: 'no_show',    assignedAgent: 2, folio: 'HD-007890', notes: 'No se presentó, enviar reagendamiento', appointmentDate: '2026-04-25', appointmentTime: '09:30', messages: [], createdAt: '2026-04-23T12:00:00Z' },
-  { id: 'c8', phone: '5500112233', name: 'Roberto Díaz',     age: 29, experience: 'Liderazgo en almacén 2 años',profile: 'supervisor', stage: 'apto',       assignedAgent: 3, folio: '',          notes: 'Pendiente de agendar',        appointmentDate: '',            appointmentTime: '09:30', messages: [], createdAt: '2026-04-26T09:00:00Z' },
+  { id: 'c1', phone: '5512345678', name: 'María González', age: 22, experience: 'Atención al cliente 1 año', profile: 'asesor', stage: 'agendo', assignedAgent: 1, folio: 'HD-001234', notes: 'Muy interesada, llegó puntual', appointmentDate: '2026-04-27', appointmentTime: '09:30', interviewer: 'Lic. Claudia', vacancy: 'Asesor Comercial', messages: [], createdAt: '2026-04-25T10:00:00Z' },
+  { id: 'c2', phone: '5598765432', name: 'Carlos Ramírez', age: 19, experience: 'Sin experiencia', profile: 'volantero', stage: 'interesado', assignedAgent: 2, folio: '', notes: '', appointmentDate: '', appointmentTime: '09:30', interviewer: '', vacancy: 'Volantero', messages: [], createdAt: '2026-04-25T11:00:00Z' },
+  { id: 'c3', phone: '5511223344', name: 'Ana Torres', age: 28, experience: 'Supervisora 2 años', profile: 'supervisor', stage: 'confirmocita', assignedAgent: 3, folio: 'HD-005678', notes: 'Experiencia sólida en liderazgo', appointmentDate: '2026-04-26', appointmentTime: '09:30', interviewer: 'Ing. Marco', vacancy: 'Supervisor de Área', messages: [], createdAt: '2024-04-24T09:00:00Z' },
+  { id: 'c4', phone: '5544332211', name: 'Luis Hernández', age: 25, experience: 'Ventas Telmex 6 meses', profile: 'asesor', stage: 'bienvenida', assignedAgent: 1, folio: 'HD-003456', notes: 'Contratado el 20/04', appointmentDate: '2026-04-20', appointmentTime: '09:30', interviewer: 'Lic. Claudia', vacancy: 'Asesor Comercial', messages: [], createdAt: '2026-04-18T08:00:00Z' },
+  { id: 'c5', phone: '5566778899', name: 'Sofía Mendoza', age: 17, experience: 'Sin experiencia', profile: 'volantero', stage: 'interesado', assignedAgent: 4, folio: '', notes: '', appointmentDate: '', appointmentTime: '09:30', interviewer: '', vacancy: 'Volantero', messages: [], createdAt: '2026-04-26T07:00:00Z' },
+  { id: 'c6', phone: '5533221100', name: 'Jorge Castillo', age: 31, experience: 'Captura de datos 3 años', profile: 'ayudante', stage: 'confirmodd', assignedAgent: 5, folio: '', notes: 'Muy organizado', appointmentDate: '', appointmentTime: '09:30', interviewer: 'Lic. Claudia', vacancy: 'Ayudante General', messages: [], createdAt: '2026-04-25T15:00:00Z' },
+  { id: 'c7', phone: '5577889900', name: 'Elena Morales', age: 24, experience: 'Promotora 1 año', profile: 'asesor', stage: 'no_show', assignedAgent: 2, folio: 'HD-007890', notes: 'No se presentó, enviar reagendamiento', appointmentDate: '2026-04-25', appointmentTime: '09:30', interviewer: '', vacancy: 'Asesor Comercial', messages: [], createdAt: '2026-04-23T12:00:00Z' },
+  { id: 'c8', phone: '5500112233', name: 'Roberto Díaz', age: 29, experience: 'Liderazgo en almacén 2 años', profile: 'supervisor', stage: 'interesado', assignedAgent: 3, folio: '', notes: 'Pendiente de agendar', appointmentDate: '', appointmentTime: '09:30', interviewer: '', vacancy: 'Supervisor de Área', messages: [], createdAt: '2026-04-26T09:00:00Z' },
 ];

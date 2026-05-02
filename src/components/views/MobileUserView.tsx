@@ -100,7 +100,7 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
       <header className="px-4 sm:px-6 pt-safe-top pt-8 sm:pt-12 pb-4 flex justify-between items-center bg-gradient-to-b from-[#020617] to-transparent shrink-0">
         <div className="flex items-center gap-3">
           <button 
-            onClick={onBack} 
+            onClick={onClearRole} 
             className="p-2 text-slate-300 hover:text-white transition-colors bg-white/5 rounded-full border border-white/10 mr-1"
           >
             <ChevronLeft className="w-5 h-5" />
@@ -157,7 +157,7 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
               </button>
             ))}
           </div>
-          <button onClick={onBack} className="mt-auto flex items-center justify-center gap-2 w-full py-4 bg-red-500/10 text-red-400 rounded-xl font-bold border border-red-500/20">
+          <button onClick={() => { if (window.confirm('¿Cerrar sesión? Se perderán los cambios no guardados.')) onBack(); }} className="mt-auto flex items-center justify-center gap-2 w-full py-4 bg-red-500/10 text-red-400 rounded-xl font-bold border border-red-500/20">
             <LogOut className="w-5 h-5" /> Cerrar Sesión
           </button>
         </div>

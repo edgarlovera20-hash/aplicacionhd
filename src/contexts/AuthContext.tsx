@@ -1,11 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { setAccessToken as setApiToken, clearAccessToken, getAccessToken } from '../api';
 
 export interface User {
   uid:          string;
   email:        string | null;
   displayName?: string | null;
   role?:        string;
-  sessionToken?: string; // access token JWT (15 min)
+  sessionToken?: string; // access token JWT (15 min) — kept in memory only for backward compat
 }
 
 interface AuthContextType {
@@ -45,11 +46,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
       if (!res.ok) return null;
       const { sessionToken } = await res.json();
+      // SEGURIDAD: token guardado SOLO en memoria — NO en localStorage
+      setApiToken(sessionToken);
       setUser(prev => {
         if (!prev) return prev;
-        const updated = { ...prev, sessionToken };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        return updated;
+        return { ...prev, sessionToken };
       });
       return sessionToken as string;
     } catch {
@@ -65,6 +66,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!newToken) {
         // Refresh falló — sesión expirada, limpiar
         localStorage.removeItem(STORAGE_KEY);
+        clearAccessToken();
         setUser(null);
         clearRefreshTimer();
       }
@@ -72,22 +74,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [refreshAccessToken]);
 
   useEffect(() => {
+    // En la carga inicial, intentar restaurar la sesión vía refresh cookie.
+    // Ya NO leemos el token de localStorage — se renueva del servidor.
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
         const parsed: User = JSON.parse(saved);
-        setUser(parsed);
-        startRefreshTimer(parsed);
+        // Restaurar datos del usuario (sin token — se renueva abajo)
+        const userWithoutToken = { ...parsed, sessionToken: undefined };
+        setUser(userWithoutToken);
+        // Intentar renovar el token inmediatamente vía cookie httpOnly
+        refreshAccessToken().then(newToken => {
+          if (newToken) {
+            setUser(prev => prev ? { ...prev, sessionToken: newToken } : prev);
+            startRefreshTimer({ ...userWithoutToken, sessionToken: newToken });
+          } else {
+            // Refresh cookie expirada — sesión perdida
+            localStorage.removeItem(STORAGE_KEY);
+            clearAccessToken();
+            setUser(null);
+          }
+          setLoading(false);
+        });
+        return clearRefreshTimer;
       } catch {
         localStorage.removeItem(STORAGE_KEY);
       }
     }
     setLoading(false);
     return clearRefreshTimer;
-  }, [startRefreshTimer]);
+  }, [startRefreshTimer, refreshAccessToken]);
 
   const login = useCallback((userData: User) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(userData));
+    // SEGURIDAD: guardar datos del usuario en localStorage SIN el access token.
+    // El token solo vive en memoria (variable del módulo api.ts).
+    const { sessionToken, ...safeData } = userData;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(safeData));
+    if (sessionToken) setApiToken(sessionToken);
     setUser(userData);
     startRefreshTimer(userData);
   }, [startRefreshTimer]);
@@ -97,6 +120,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     } catch { /* ignora errores de red en logout */ }
     clearRefreshTimer();
+    clearAccessToken();
     localStorage.removeItem(STORAGE_KEY);
     setUser(null);
   }, []);

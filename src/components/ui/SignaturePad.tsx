@@ -3,7 +3,7 @@ import { Trash2, Check, Video, VideoOff } from 'lucide-react';
 import { isSignatureValid, canvasToSignatureBase64 } from '../../utils/pdf.utils';
 
 interface SignaturePadProps {
-  onSignatureConfirm: (base64String: string) => void;
+  onSignatureConfirm: (base64String: string, videoBlobUrl?: string, videoBase64?: string) => void;
   showCamera?: boolean;
 }
 
@@ -14,6 +14,11 @@ export default function SignaturePad({ onSignatureConfirm, showCamera = true }: 
   const [hasSignature, setHasSignature] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  
+  // MediaRecorder refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
 
   // Initialize canvas
   useEffect(() => {
@@ -36,6 +41,17 @@ export default function SignaturePad({ onSignatureConfirm, showCamera = true }: 
     }
   }, []);
 
+  // Auto-start camera if enabled
+  useEffect(() => {
+    if (showCamera) {
+      // Small delay to ensure refs are ready
+      const t = setTimeout(() => {
+        startCamera();
+      }, 500);
+      return () => clearTimeout(t);
+    }
+  }, [showCamera]);
+
   // Start camera (Picture-in-Picture)
   const startCamera = async () => {
     try {
@@ -53,6 +69,23 @@ export default function SignaturePad({ onSignatureConfirm, showCamera = true }: 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setCameraActive(true);
+        
+        // Setup MediaRecorder
+        chunksRef.current = [];
+        const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+          ? 'video/webm;codecs=vp9,opus'
+          : 'video/webm';
+        
+        const mr = new MediaRecorder(stream, { mimeType });
+        mr.ondataavailable = (e) => {
+          if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+        mr.onstop = () => {
+          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+          setVideoBlob(blob);
+        };
+        mr.start(1000); // collect data every second
+        mediaRecorderRef.current = mr;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Cannot access camera';
@@ -63,6 +96,10 @@ export default function SignaturePad({ onSignatureConfirm, showCamera = true }: 
 
   // Stop camera
   const stopCamera = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    
     if (videoRef.current && videoRef.current.srcObject) {
       const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
       tracks.forEach(track => track.stop());
@@ -197,8 +234,35 @@ export default function SignaturePad({ onSignatureConfirm, showCamera = true }: 
       return;
     }
 
+    // Si la cámara está activa, deténla para finalizar la grabación
+    if (cameraActive) {
+      stopCamera();
+    }
+
     const base64 = canvasToSignatureBase64(canvas);
-    onSignatureConfirm(base64);
+    
+    if (videoBlob) {
+      const reader = new FileReader();
+      reader.readAsDataURL(videoBlob);
+      reader.onloadend = () => {
+        onSignatureConfirm(base64, URL.createObjectURL(videoBlob), reader.result as string);
+      };
+    } else {
+      // In case video recording was just stopped, we might need a small delay,
+      // but let's see if chunks were already processed. If no video, just return base64.
+      setTimeout(() => {
+        if (chunksRef.current.length > 0) {
+          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => {
+            onSignatureConfirm(base64, URL.createObjectURL(blob), reader.result as string);
+          };
+        } else {
+          onSignatureConfirm(base64);
+        }
+      }, 300);
+    }
   };
 
   return (

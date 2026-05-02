@@ -2,6 +2,10 @@ import React, { useState, useEffect, lazy, Suspense, useRef, useCallback } from 
 import { motion } from 'motion/react';
 import {
   BarChart3, Users, DollarSign, Activity,
+  TrendingUp, ArrowUpRight, ArrowDownRight,
+  LayoutDashboard,
+  Loader2, FileText, Search, X,
+  Headphones,
   LogOut, TrendingUp, ArrowUpRight, ArrowDownRight,
   LayoutDashboard, Settings as SettingsIcon, ChevronLeft,
   User, ClipboardCheck, FileSearch, Wallet, Headphones, AlertTriangle, Megaphone, Loader2,
@@ -14,6 +18,8 @@ import {
   PieChart as RePieChart, Pie, Cell,
 } from 'recharts';
 import Logo from '../ui/Logo';
+import EnterpriseSidebar from '../ui/EnterpriseSidebar';
+import { useAuth } from '../../contexts/AuthContext';
 
 // ── Lazy-loaded sections (reduces initial bundle ~60%) ─────────────────
 const Settings             = lazy(() => import('./Settings'));
@@ -67,14 +73,13 @@ interface DashKPIs {
 
 export default function ManagerView({ role, onBack, onClearRole }: ManagerViewProps) {
   const [activeSection, setActiveSection] = useState('Dashboard');
-  // Auto-colapsa en tablets (md), expande en desktop (lg+)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1024);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [time, setTime] = useState(new Date().toLocaleTimeString('es-ES', { hour12: false }));
   const [searchQ, setSearchQ]         = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searchOpen, setSearchOpen]   = useState(false);
   const searchRef                     = useRef<HTMLDivElement>(null);
+  const { user } = useAuth();
 
   // ── Live dashboard KPIs ─────────────────────────────────────────────────
   const [dashKPIs, setDashKPIs]     = useState<DashKPIs | null>(null);
@@ -84,12 +89,12 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
     if (role !== 'GERENTE' && role !== 'ADMINISTRACION') return;
     setDashLoading(true);
     try {
-      const token = JSON.parse(localStorage.getItem('hdreams_user') || '{}')?.sessionToken || '';
+      const token = user?.sessionToken || '';
       const r = await fetch('/api/dashboard/executive', { headers: { Authorization: `Bearer ${token}` } });
       if (r.ok) setDashKPIs(await r.json());
     } catch { /* no-op */ }
     finally { setDashLoading(false); }
-  }, [role]);
+  }, [role, user?.sessionToken]);
 
   useEffect(() => {
     if (activeSection === 'Dashboard') loadDashKPIs();
@@ -125,20 +130,22 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
     const timer = setInterval(() => {
       setTime(new Date().toLocaleTimeString('es-ES', { hour12: false }));
     }, 1000);
-
-    // Resize listener: auto-colapsa/expande sidebar según ancho
-    const onResize = () => {
-      if (window.innerWidth >= 1024) setSidebarCollapsed(false);
-      else if (window.innerWidth < 1024) setSidebarCollapsed(true);
-      if (window.innerWidth >= 768) setMobileSidebarOpen(false);
-    };
-    window.addEventListener('resize', onResize);
-    return () => { clearInterval(timer); window.removeEventListener('resize', onResize); };
+    return () => clearInterval(timer);
   }, [role]);
 
   return (
     <div className="flex h-screen w-full text-slate-50 relative z-10 overflow-hidden">
 
+      {/* ── Enterprise Sidebar ──────────────────────────────────────── */}
+      <EnterpriseSidebar
+        role={role}
+        activeSection={activeSection}
+        onNavigate={setActiveSection}
+        onLogout={onBack}
+        onClearRole={onClearRole}
+        mobileOpen={mobileSidebarOpen}
+        onMobileClose={() => setMobileSidebarOpen(false)}
+      />
       {/* Mobile sidebar overlay backdrop */}
       {mobileSidebarOpen && (
         <div
@@ -241,79 +248,70 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
       {/* Main Content */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10">
         {/* Top Header */}
-        <header className="h-14 bg-transparent flex items-center justify-between px-3 md:px-5 shrink-0 border-b border-white/5">
-          <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
+        <header className="h-16 bg-slate-900/20 backdrop-blur-xl flex items-center justify-between px-4 md:px-6 shrink-0 border-b border-white/[0.08]">
+          <div className="flex items-center gap-3 md:gap-4 flex-1 min-w-0">
             {/* Hamburger para mobile */}
             <button
               onClick={() => setMobileSidebarOpen(o => !o)}
-              className="md:hidden flex items-center justify-center w-8 h-8 text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg border border-white/5 shrink-0"
+              className="md:hidden flex items-center justify-center w-10 h-10 text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 shrink-0 transition-all"
               title="Abrir menú"
             >
-              <LayoutDashboard className="w-4 h-4" />
-            </button>
-            <button
-              onClick={onBack}
-              className="hidden sm:flex items-center gap-1.5 text-slate-400 hover:text-white transition-all bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-lg border border-white/5 shrink-0"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-bold uppercase tracking-widest">Atrás</span>
+              <LayoutDashboard className="w-5 h-5" />
             </button>
             <div className="relative flex-1 min-w-0 max-w-xs md:max-w-sm lg:max-w-md group" ref={searchRef}>
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
               <input
                 type="text"
                 value={searchQ}
                 onChange={e => { setSearchQ(e.target.value); setSearchOpen(e.target.value.length >= 2); }}
                 onFocus={() => searchQ.length >= 2 && setSearchOpen(true)}
                 placeholder="Buscar en el sistema..."
-                className="w-full bg-slate-900/40 backdrop-blur-md border border-white/5 rounded-xl py-2 pl-9 pr-9 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-blue-500/30 focus:ring-2 focus:ring-blue-500/5 transition-all"
+                className="w-full bg-white/[0.03] backdrop-blur-md border border-white/[0.08] rounded-[1.25rem] py-2.5 pl-10 pr-10 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/40 focus:ring-4 focus:ring-blue-500/5 transition-all shadow-inner"
               />
               {searchQ && (
                 <button onClick={() => { setSearchQ(''); setSearchResults([]); setSearchOpen(false); }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white">
-                  <X className="w-3 h-3" />
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+                  <X className="w-3.5 h-3.5" />
                 </button>
               )}
               {searchOpen && searchResults.length > 0 && (
-                <div className="absolute top-full mt-1 left-0 right-0 bg-zinc-900/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl shadow-black/60 z-50 overflow-hidden max-h-64 overflow-y-auto custom-scrollbar animate-scale-in">
+                <div className="absolute top-full mt-2 left-0 right-0 bg-zinc-900/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-50 overflow-hidden max-h-72 overflow-y-auto custom-scrollbar animate-scale-in">
                   {searchResults.map((r: any, i: number) => (
                     <button key={i} onClick={() => { setActiveSection(r.modulo === 'ventas' ? 'Sales CRM' : r.modulo === 'clientes' ? 'Soporte a Clientes' : 'Reclutamiento'); setSearchOpen(false); setSearchQ(''); }}
-                      className="w-full flex items-start gap-3 px-4 py-2.5 hover:bg-white/5 transition-colors text-left border-b border-white/5 last:border-0">
-                      <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded mt-0.5 shrink-0 ${r.modulo === 'ventas' ? 'bg-purple-500/20 text-purple-400' : r.modulo === 'clientes' ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'}`}>{r.modulo}</span>
+                      className="w-full flex items-start gap-4 px-4 py-3 hover:bg-white/5 transition-colors text-left border-b border-white/5 last:border-0">
+                      <span className={`text-[10px] font-black uppercase px-2 py-1 rounded-md mt-0.5 shrink-0 ${r.modulo === 'ventas' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/20' : r.modulo === 'clientes' ? 'bg-red-500/20 text-red-400 border border-red-500/20' : 'bg-amber-500/20 text-amber-400 border border-amber-500/20'}`}>{r.modulo}</span>
                       <div className="min-w-0">
-                        <p className="text-xs text-zinc-100 font-semibold truncate">{r.titulo}</p>
-                        <p className="text-[10px] text-zinc-500 truncate">{r.subtitulo}</p>
+                        <p className="text-sm text-zinc-100 font-bold truncate">{r.titulo}</p>
+                        <p className="text-[11px] text-zinc-500 truncate mt-0.5">{r.subtitulo}</p>
                       </div>
                     </button>
                   ))}
                 </div>
               )}
-              {searchOpen && searchQ.length >= 2 && searchResults.length === 0 && (
-                <div className="absolute top-full mt-1 left-0 right-0 bg-zinc-900/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl z-50 px-4 py-3 text-xs text-zinc-500">
-                  Sin resultados para "{searchQ}"
-                </div>
-              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 md:gap-4 shrink-0">
-            <div className="text-right hidden lg:block">
-              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">Status Global</p>
-              <div className="flex items-center justify-end gap-1.5 mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)] animate-pulse"></span>
-                <span className="text-[10px] font-bold text-emerald-400 font-mono">SYNC • {time}</span>
+          <div className="flex items-center gap-3 md:gap-5 shrink-0">
+            <div className="text-right hidden lg:block pr-2">
+              <p className="text-[9px] font-black text-slate-600 uppercase tracking-[0.3em] mb-1">Status Global</p>
+              <div className="flex items-center justify-end gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse"></span>
+                <span className="text-[11px] font-black text-emerald-400 font-mono tracking-tighter uppercase">SYNC • {time}</span>
               </div>
             </div>
 
             <NotificationBell role={role} />
-            <div className="flex items-center gap-2 pl-2 md:pl-4 border-l border-white/5">
+            
+            <div className="flex items-center gap-3 pl-4 md:pl-6 border-l border-white/[0.08]">
               <div className="text-right hidden md:block">
-                <p className="text-[11px] font-bold text-white leading-none">{role}</p>
-                <p className="text-[9px] text-slate-500">Conectado</p>
+                <p className="text-xs font-black text-white leading-none uppercase tracking-tight">{role}</p>
+                <p className="text-[10px] text-emerald-500/80 font-bold mt-1 uppercase tracking-widest flex items-center justify-end gap-1.5">
+                  <span className="w-1 h-1 rounded-full bg-emerald-500"></span> Conectado
+                </p>
               </div>
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 p-[1px] shadow-lg shadow-blue-500/20">
-                <div className="w-full h-full rounded-xl bg-slate-900 flex items-center justify-center border border-white/10">
-                  <span className="text-[10px] font-black text-white">{role.slice(0, 2).toUpperCase()}</span>
+              <div className="w-10 h-10 rounded-[1.1rem] bg-gradient-to-tr from-blue-600/40 to-indigo-600/40 p-[1.5px] shadow-[0_0_20px_rgba(59,130,246,0.15)] group cursor-pointer hover:scale-105 transition-transform">
+                <div className="w-full h-full rounded-[1rem] bg-slate-900 flex items-center justify-center border border-white/10 group-hover:border-blue-500/30 transition-colors">
+                  <span className="text-xs font-black text-white">{role.slice(0, 2).toUpperCase()}</span>
                 </div>
               </div>
             </div>
@@ -610,7 +608,7 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
           {activeSection === 'Anuncios' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Anuncios"><Announcements /></ErrorBoundary></Suspense>}
           {activeSection === 'Captura y Validación' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Captura y Validación"><CaptureValidation onSectionChange={setActiveSection} /></ErrorBoundary></Suspense>}
           {activeSection === 'Consulta y Seguimiento' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Consulta y Seguimiento"><ConsultasSeguimiento /></ErrorBoundary></Suspense>}
-          {activeSection === 'Sales CRM' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Sales CRM"><SalesCRM /></ErrorBoundary></Suspense>}
+          {activeSection === 'Sales CRM' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Sales CRM"><SalesCRM role={role} /></ErrorBoundary></Suspense>}
           {activeSection === 'Soporte a Clientes' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Soporte CRM"><SupportCRM /></ErrorBoundary></Suspense>}
           {activeSection === 'Seguimiento Clientes' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Seguimiento Clientes"><CustomerFollowup /></ErrorBoundary></Suspense>}
           {activeSection === 'Morosidad' && <Suspense fallback={<SectionLoader />}><ErrorBoundary label="Morosidad"><SupportCRM initialFilter="MOROSO" /></ErrorBoundary></Suspense>}
@@ -639,34 +637,8 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
   );
 }
 
-function NavItem({ icon: Icon, label, active, onClick, highlight, collapsed }: any) {
-  return (
-    <button
-      onClick={onClick}
-      title={collapsed ? label : undefined}
-      className={`group w-full flex items-center ${collapsed ? 'justify-center px-0 py-2' : 'gap-2.5 px-3 py-2'} rounded-xl transition-all duration-200 active:scale-[0.98] ${
-        active
-          ? highlight
-            ? 'bg-[#00ABDF]/20 text-white border border-[#00ABDF]/30 shadow-md shadow-[#00ABDF]/10'
-            : 'bg-blue-600/20 text-white border border-blue-500/30 shadow-md shadow-blue-500/5'
-          : highlight
-            ? 'text-[#00ABDF]/70 hover:text-white hover:bg-[#00ABDF]/10 border border-[#00ABDF]/10'
-            : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
-      }`}
-    >
-      <div className={`p-1.5 rounded-lg transition-all duration-200 shrink-0 ${
-        active
-          ? highlight ? 'bg-[#00ABDF] text-white' : 'bg-blue-500 text-white'
-          : highlight ? 'bg-[#00ABDF]/20 text-[#00ABDF] group-hover:bg-[#00ABDF]/30' : 'bg-slate-800/80 text-slate-400 group-hover:bg-slate-700 group-hover:text-white'
-      }`}>
-        <Icon className="w-3.5 h-3.5 transition-transform duration-200 group-hover:scale-110" />
-      </div>
-      {!collapsed && <span className="font-semibold text-xs tracking-wide text-left leading-tight truncate">{label}</span>}
-      {!collapsed && active && <div className={`ml-auto w-1 h-1 shrink-0 rounded-full ${highlight ? 'bg-[#00ABDF] shadow-[0_0_6px_#00ABDF]' : 'bg-blue-400 shadow-[0_0_6px_#3b82f6]'}`} />}
-      {!collapsed && !active && highlight && <div className="ml-auto w-1.5 h-1.5 shrink-0 rounded-full bg-[#00ABDF]/50 animate-pulse" />}
-    </button>
-  );
-}
+
+
 
 function KpiCard({ title, value, trend, trendUp, icon: Icon, color, bg }: any) {
   const glowColor = color.includes('blue') ? 'rgba(59,130,246,0.3)' :

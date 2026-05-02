@@ -41,6 +41,8 @@ interface Contract {
   paymentStatus: 'completo' | 'parcial' | 'pendiente';
   source: string;
   date: string;
+  statusExpediente: 'completo' | 'incompleto';
+  docsPaths?: Record<string, string>;
 }
 
 interface Payment {
@@ -102,6 +104,7 @@ const mockContracts: Contract[] = [
     vendedor: 'Carlos López', agente: 'CONTRATA-BOT', progress: 30,
     labels: ['l2', 'l9'], sections: [true, false, false, false, false, false, false],
     paymentStatus: 'pendiente', source: 'WhatsApp', date: '16/04/2024 11:20',
+    statusExpediente: 'incompleto'
   },
 ];
 
@@ -118,8 +121,13 @@ const WHATSAPP_TEMPLATES = [
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+import { Role } from '../../App';
 
-export default function SalesCRM() {
+interface SalesCRMProps {
+  role?: Role;
+}
+
+export default function SalesCRM({ role }: SalesCRMProps) {
   const [view, setView] = useState<'dashboard' | 'detail' | 'vendor'>('dashboard');
   const [contracts, setContracts] = useState<Contract[]>(mockContracts);
   const [selectedContract, setSelectedContract] = useState<Contract | null>(null);
@@ -239,6 +247,7 @@ export default function SalesCRM() {
                       <th className="px-6 py-4">Cliente / Folio</th>
                       <th className="px-6 py-4">Paquete</th>
                       <th className="px-6 py-4">Estado</th>
+                      <th className="px-6 py-4">Expediente</th>
                       <th className="px-6 py-4">Etiquetas</th>
                       <th className="px-6 py-4">Vendedor</th>
                       <th className="px-6 py-4"></th>
@@ -260,6 +269,16 @@ export default function SalesCRM() {
                           <div className="mt-1.5 w-24 h-1 bg-white/10 rounded-full overflow-hidden">
                             <div className="h-full bg-blue-500 rounded-full" style={{ width: `${c.progress}%` }} />
                           </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={cn(
+                            "px-2 py-0.5 rounded-full text-[9px] font-bold border",
+                            c.statusExpediente === 'completo' 
+                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
+                              : "bg-red-500/10 text-red-400 border-red-500/20"
+                          )}>
+                            {c.statusExpediente === 'completo' ? 'COMPLETO' : 'INCOMPLETO'}
+                          </span>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-wrap gap-1 max-w-[140px]">
@@ -541,6 +560,21 @@ export default function SalesCRM() {
                         <DocCard label="Comprobante" icon={FileText} status="OK" />
                         <DocCard label="Contrato PDF" icon={FileText} status="VER" />
                         <DocCard label="Video Firma" icon={FileCheck} status="PEND" />
+                        
+                        {(role === 'ADMINISTRACION' || role === 'GERENTE') && (
+                          <div className="aspect-square rounded-2xl bg-purple-600/20 border border-purple-500/30 flex flex-col items-center justify-center gap-2 group hover:bg-purple-600/30 transition-all cursor-pointer shadow-lg shadow-purple-500/10">
+                            <FileText className="w-6 h-6 text-purple-400" />
+                            <span className="text-[9px] font-black text-white uppercase text-center">Descargar<br/>Expediente</span>
+                          </div>
+                        )}
+
+                        {(role !== 'ADMINISTRACION' && role !== 'GERENTE') && (
+                          <div className="aspect-square rounded-2xl border border-white/5 bg-white/2 flex flex-col items-center justify-center gap-2 opacity-50 grayscale">
+                            <Shield className="w-6 h-6 text-slate-500" />
+                            <span className="text-[8px] font-bold text-slate-500 uppercase text-center px-2">Solo Admin/Gerencia puede descargar</span>
+                          </div>
+                        )}
+
                         <div className="aspect-square rounded-2xl border-2 border-dashed border-white/5 flex flex-col items-center justify-center gap-2 group hover:border-purple-500/30 transition-all cursor-pointer">
                           <Upload className="w-6 h-6 text-slate-700 group-hover:text-purple-500" />
                           <span className="text-[9px] font-bold text-slate-700 group-hover:text-slate-500 uppercase">Subir doc</span>

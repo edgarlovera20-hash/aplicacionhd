@@ -15,17 +15,17 @@ import EmployeeBadge from '../EmployeeBadge';
 /** Derive a human-readable puesto label from the role string */
 function getPuesto(role?: string | null): string {
   const map: Record<string, string> = {
-    GERENTE:         'Director / Gerente General',
-    ADMINISTRACION:  'Administrativo(a)',
-    RECLUTADORA:     'Reclutadora de Talento',
-    SUPERVISOR:      'Supervisor de Ventas',
-    VENDEDOR:        'Asesor Comercial',
-    gerente:         'Director / Gerente General',
-    administradora:  'Administrativo(a)',
-    reclutadora:     'Reclutadora de Talento',
-    supervisor:      'Supervisor de Ventas',
-    asesor:          'Asesor Comercial',
-    capacitacion:    'Agente en Capacitación',
+    GERENTE: 'Director / Gerente General',
+    ADMINISTRACION: 'Administrativo(a)',
+    RECLUTADORA: 'Reclutadora de Talento',
+    SUPERVISOR: 'Supervisor de Ventas',
+    VENDEDOR: 'Asesor Comercial',
+    gerente: 'Director / Gerente General',
+    administradora: 'Administrativo(a)',
+    reclutadora: 'Reclutadora de Talento',
+    supervisor: 'Supervisor de Ventas',
+    asesor: 'Asesor Comercial',
+    capacitacion: 'Agente en Capacitación',
     asistente_gerente: 'Asistente de Gerencia',
   };
   return map[role ?? ''] ?? 'Colaborador(a)';
@@ -51,25 +51,25 @@ function generateMatricula(uid: string): string {
    Mock data (kept for leaderboard / achievements)
 ──────────────────────────────────────────────────────── */
 const leaderboardData = [
-  { id: 1, name: 'Ana García',    points: 1850, folios: 60, level: 18, rank: 1 },
-  { id: 2, name: 'Edgar Lovera', points: 1625, folios: 50, level: 4,  rank: 2 },
-  { id: 3, name: 'Carlos M.',    points: 1420, folios: 45, level: 14, rank: 3 },
-  { id: 4, name: 'Elena R.',     points: 980,  folios: 30, level: 9,  rank: 4 },
-  { id: 5, name: 'Luis P.',      points: 850,  folios: 25, level: 8,  rank: 5 },
+  { id: 1, name: 'Ana García', points: 1850, folios: 60, level: 18, rank: 1 },
+  { id: 2, name: 'Edgar Lovera', points: 1625, folios: 50, level: 4, rank: 2 },
+  { id: 3, name: 'Carlos M.', points: 1420, folios: 45, level: 14, rank: 3 },
+  { id: 4, name: 'Elena R.', points: 980, folios: 30, level: 9, rank: 4 },
+  { id: 5, name: 'Luis P.', points: 850, folios: 25, level: 8, rank: 5 },
 ];
 
 const medals = [
-  { id: 1, name: 'Primera Venta',   icon: Star,      color: 'text-yellow-400', bg: 'bg-yellow-400/10', unlocked: true },
-  { id: 2, name: 'Vendedor Activo', icon: TrendingUp, color: 'text-blue-400',   bg: 'bg-blue-400/10',   unlocked: true },
-  { id: 3, name: 'En Racha',        icon: Flame,      color: 'text-orange-400', bg: 'bg-orange-400/10', unlocked: true },
-  { id: 4, name: 'Nivel 5',         icon: Shield,     color: 'text-purple-400', bg: 'bg-purple-400/10', unlocked: false },
-  { id: 5, name: 'Top 1 Semanal',   icon: Crown,      color: 'text-yellow-300', bg: 'bg-yellow-300/10', unlocked: false },
+  { id: 1, name: 'Primera Venta', icon: Star, color: 'text-yellow-400', bg: 'bg-yellow-400/10', unlocked: true },
+  { id: 2, name: 'Vendedor Activo', icon: TrendingUp, color: 'text-blue-400', bg: 'bg-blue-400/10', unlocked: true },
+  { id: 3, name: 'En Racha', icon: Flame, color: 'text-orange-400', bg: 'bg-orange-400/10', unlocked: true },
+  { id: 4, name: 'Nivel 5', icon: Shield, color: 'text-purple-400', bg: 'bg-purple-400/10', unlocked: false },
+  { id: 5, name: 'Top 1 Semanal', icon: Crown, color: 'text-yellow-300', bg: 'bg-yellow-300/10', unlocked: false },
 ];
 
 const timeline = [
-  { id: 1, type: 'medal', title: 'Desbloqueaste "En Racha"',  time: 'Hace 2 horas',  icon: Flame,      color: 'text-orange-400' },
-  { id: 2, type: 'sale',  title: 'Venta Pagada (+25 XP)',      time: 'Ayer',           icon: DollarSign, color: 'text-emerald-400' },
-  { id: 3, type: 'level', title: 'Alcanzaste el Nivel 4',      time: 'Hace 3 días',   icon: Zap,        color: 'text-blue-400' },
+  { id: 1, type: 'medal', title: 'Desbloqueaste "En Racha"', time: 'Hace 2 horas', icon: Flame, color: 'text-orange-400' },
+  { id: 2, type: 'sale', title: 'Venta Pagada (+25 XP)', time: 'Ayer', icon: DollarSign, color: 'text-emerald-400' },
+  { id: 3, type: 'level', title: 'Alcanzaste el Nivel 4', time: 'Hace 3 días', icon: Zap, color: 'text-blue-400' },
 ];
 
 function DollarSign(props: any) {
@@ -201,48 +201,59 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
   const { user } = useAuth();
 
   // Derive real data from auth context
-  const realName      = user?.displayName || 'Empleado HD';
-  const realRole      = user?.role        || 'VENDEDOR';
-  const realUid       = user?.uid         || 'USR-0000-0001';
-  const realEmail     = user?.email       || '';
+  const realName = user?.displayName || 'Empleado HD';
+  const realRole = user?.role || 'VENDEDOR';
+  const realUid = user?.uid || 'USR-0000-0001';
+  const realEmail = user?.email || '';
   const realMatricula = generateMatricula(realUid);
-  const realPuesto    = getPuesto(realRole);
+  const realPuesto = getPuesto(realRole);
 
   const [avatar, setAvatar] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [profileData, setProfileData] = useState({
-    name:  realName,
-    role:  realRole,
+    name: realName,
+    role: realRole,
     phone: '',
-    curp:  '',
+    curp: '',
     email: realEmail,
   });
   const [activeTab, setActiveTab] = useState<'weekly' | 'monthly' | 'all-time'>('weekly');
   const [showBadge, setShowBadge] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+
+  // New features: Phrase and Theme
+  const [personalPhrase, setPersonalPhrase] = useState(localStorage.getItem('hd_phrase') || 'Tu dream team comienza aquí.');
+  const [theme, setTheme] = useState(localStorage.getItem('hd_theme') || 'medium');
+
+  const handleThemeChange = (newTheme: string) => {
+    setTheme(newTheme);
+    localStorage.setItem('hd_theme', newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+  };
+
   const tabs = [
-    { id: 'weekly'   as const, label: 'Semanal', icon: Clock    },
-    { id: 'monthly'  as const, label: 'Mensual', icon: BarChart2 },
-    { id: 'all-time' as const, label: 'Global',  icon: Trophy   },
+    { id: 'weekly' as const, label: 'Semanal', icon: Clock },
+    { id: 'monthly' as const, label: 'Mensual', icon: BarChart2 },
+    { id: 'all-time' as const, label: 'Global', icon: Trophy },
   ];
 
   // XP / gamification (mock)
-  const xp         = 470;
+  const xp = 470;
   const streakDays = 8;
-  const rank       = 2;
-  const ventasPagadas  = 45;
-  const foliosTotales  = 50;
+  const rank = 2;
+  const ventasPagadas = 45;
+  const foliosTotales = 50;
 
-  const level          = Math.floor(xp / 100);
+  const level = Math.floor(xp / 100);
   const xpCurrentLevel = xp % 100;
-  const missingXP      = (level + 1) * 100 - xp;
+  const missingXP = (level + 1) * 100 - xp;
   const progressPercent = (xpCurrentLevel / 100) * 100;
-  const successRate     = foliosTotales > 0 ? ((ventasPagadas / foliosTotales) * 100).toFixed(1) : 0;
+  const successRate = foliosTotales > 0 ? ((ventasPagadas / foliosTotales) * 100).toFixed(1) : 0;
 
-  const isManager    = realRole === 'GERENTE' || realRole === 'gerente';
+  const isManager = realRole === 'GERENTE' || realRole === 'gerente';
   const hasFireStreak = streakDays >= 7;
-  const isTop3       = rank <= 3;
+  const isTop3 = rank <= 3;
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -340,6 +351,14 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
                     placeholder="Nombre"
                   />
                   <input
+                    type="text"
+                    value={personalPhrase}
+                    onChange={(e) => setPersonalPhrase(e.target.value)}
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl py-2 px-4 text-white text-sm"
+                    placeholder="Tu frase personal"
+                    maxLength={60}
+                  />
+                  <input
                     type="tel"
                     value={profileData.phone}
                     onChange={(e) => setProfileData({ ...profileData, phone: e.target.value })}
@@ -362,7 +381,7 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
                     placeholder="CURP (18 caracteres)"
                   />
                   <div className="flex gap-2">
-                    <button onClick={handleSave} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 rounded-lg">Guardar</button>
+                    <button onClick={() => { localStorage.setItem('hd_phrase', personalPhrase); handleSave(); }} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 rounded-lg">Guardar</button>
                     <button onClick={() => setIsEditing(false)} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-2 rounded-lg">Cancelar</button>
                   </div>
                 </div>
@@ -370,8 +389,11 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
                 <>
                   <h2 className="text-2xl font-bold text-white tracking-tight">{profileData.name}</h2>
                   <p className="text-sm text-[#00ABDF] uppercase tracking-widest font-bold mt-1">{realPuesto}</p>
+                  {personalPhrase && (
+                    <p className="text-xs italic text-slate-300 mt-2 px-4">"{personalPhrase}"</p>
+                  )}
                   {profileData.phone && (
-                    <p className="text-xs text-slate-400 mt-1">Tel: {profileData.phone}</p>
+                    <p className="text-xs text-slate-400 mt-2">Tel: {profileData.phone}</p>
                   )}
 
                   <div className="flex gap-2 mt-4">
@@ -460,8 +482,8 @@ export default function Profile({ onClearRole }: { onClearRole?: () => void }) {
                   <div className={cn(
                     'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0',
                     idx === 0 ? 'bg-yellow-400/20 text-yellow-400' :
-                    idx === 1 ? 'bg-slate-300/20 text-slate-300' :
-                    idx === 2 ? 'bg-orange-400/20 text-orange-400' : 'bg-slate-800 text-slate-500'
+                      idx === 1 ? 'bg-slate-300/20 text-slate-300' :
+                        idx === 2 ? 'bg-orange-400/20 text-orange-400' : 'bg-slate-800 text-slate-500'
                   )}>
                     {u.rank}
                   </div>

@@ -5,17 +5,20 @@ import {
   User, MapPin, Wifi, Tv, Phone, Signature, Loader2, Camera, MessageCircle,
   FileImage, FileScan, X, Eye, EyeOff, AlertTriangle, Video, VideoOff,
   StopCircle, PlayCircle, Bot, PhoneCall, PhoneOff, Mic, MicOff,
-  Package, Shield, Sparkles, FolderOpen, Image as ImageIcon, Check
+  Package, Shield, Sparkles, FolderOpen, Image as ImageIcon, Check, Plus,
+  RefreshCw
 } from 'lucide-react';
 import { cn, formatCurrency } from '../../lib/utils';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { api } from '../../api';
+import { useAuth } from '../../contexts/AuthContext';
 import SignaturePad from '../ui/SignaturePad';
 import { compareAddresses, AddressComponents } from '../../utils/ocr.utils';
 import { formatAddressOneLine, isAddressValid, getMissingAddressFields, expandStateAbbr } from '../../utils/address.utils';
 import { stampSignatureIntoPDF, generateSignedPdfFilename, canvasToSignatureBase64 } from '../../utils/pdf.utils';
 import { findZoneByLocality, bgClassForLevel, formatMXN } from '../../utils/riskZones';
+import { aiAgent } from '../../services/aiAgent';
 
 /* ─────────────────────────────────────────────────────────
    Types
@@ -29,6 +32,10 @@ interface CustomerCaptureData {
   ineReverso?: string;        // base64
   curpDoc?: string;           // base64
   comprobanteDomicilio?: string; // base64
+  anexoPortabilidadFrente?: string; // base64
+  anexoPortabilidadReverso?: string; // base64
+  folioSica?: string;
+  folioSicaPath?: string;    // base64 de la captura de pantalla del folio SIAC
   nombres: string;
   apellidoPaterno: string;
   apellidoMaterno: string;
@@ -63,6 +70,10 @@ interface CustomerCaptureData {
   nip?: string;
   videoFirmaUrl?: string;
   videoFirmaBlob?: string;   // objectURL for playback
+  plataformasAdicionales?: string[];
+  streamingPromo?: string;
+  validacionIAActiva?: boolean;
+  statusExpediente?: 'completo' | 'incompleto';
   // Paths relativos en /uploads/expedientes/{folio}/... (set por uploadToExpediente)
   ineFrentePath?: string;
   ineReversoPath?: string;
@@ -73,6 +84,8 @@ interface CustomerCaptureData {
   hashExpediente?: string;
   constanciaNom151?: string;
   fechaSolicitud: string;
+  usuario?: string;
+  asesorNombre?: string;
 }
 
 /* ─────────────────────────────────────────────────────────
@@ -544,16 +557,24 @@ function AICallModal({ clientName, phone, paquete, onClose }: AICallModalProps) 
    Main Component
 ───────────────────────────────────────────────────────── */
 export default function NewSaleForm({ onBack }: { onBack: () => void }) {
+  const { user } = useAuth();
+  const userName = user?.displayName || (user as any)?.nombres || 'Promotor Autorizado Infinitum';
+  const userId = (user as any)?.promotorId || user?.uid || 'S/N';
+  const currentDate = new Date().toISOString().split('T')[0];
+
   const [step, setStep] = useState(1);
   const [form, setForm] = useState<Partial<CustomerCaptureData>>({
     folio: `FOL-${Math.floor(Math.random() * 1000000)}`,
-    fechaSolicitud: new Date().toISOString().split('T')[0],
+    fechaSolicitud: currentDate,
+    usuario: userId,
+    asesorNombre: userName,
     tipoCliente: 'linea_nueva',
     tipoServicio: 'residencial',
     categoriaProducto: 'infinitum_puro',
     streamingElegido: 'ninguno',
     mismaDireccionIne: true,
     coordenadas: '',
+    validacionIAActiva: true,
     hashExpediente: Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
   });
 
@@ -562,13 +583,87 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
   const [ocrError, setOcrError]       = useState<string>('');
   const [docType, setDocType]         = useState<'ine' | 'curp'>('ine');
   const [selectedPackage, setSelectedPackage] = useState<PackageCatalogItem | null>(null);
-  const [asesorNombre, setAsesorNombre] = useState('Promotor Autorizado Infinitum');
+  const [asesorNombre, setAsesorNombre] = useState(userName);
   const [showAICall, setShowAICall] = useState(false);
   const [aiCallDone, setAiCallDone] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [addressMatch, setAddressMatch] = useState<{ isMatch: boolean; confidence: number } | null>(null);
   const [signatureConfirmed, setSignatureConfirmed] = useState(false);
   const [signatureBase64, setSignatureBase64] = useState<string>('');
+  const [packageCatalog, setPackageCatalog] = useState<PackageCatalogItem[]>(PACKAGE_CATALOG);
+  const [extraPlatforms, setExtraPlatforms] = useState<any[]>([
+    { id: 'disney', name: 'Disney+', price: 179 },
+    { id: 'prime', name: 'Prime Video', price: 99 },
+    { id: 'netflix_ads', name: 'Netflix 2 Pantallas (con anuncios)', price: 99 },
+    { id: 'netflix_hd', name: 'Netflix 2 Pantallas HD', price: 219 },
+    { id: 'netflix_4k', name: 'Netflix 4 Pantallas 4K', price: 299 },
+    { id: 'hbo_max_full', name: 'HBO Max Full Access', price: 179 },
+  ]);
+
+  const [aiValidationResult, setAiValidationResult] = useState<{status: string, message: string} | null>(null);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
+
+  // Verificación de duplicados y morosos
+  const checkDuplicates = useCallback(async (phone: string) => {
+    if (phone.length < 10) return;
+    setIsCheckingDuplicate(true);
+    setDuplicateWarning(null);
+    try {
+      const ventas = await api.get('/ventas');
+      const morosos = ventas; // Evaluamos en base a los mismos datos de la tabla central
+
+      const existingVenta = ventas.find((v: any) => v.telefonoTitular === phone || v.telefonoAsig === phone);
+      if (existingVenta) {
+        setDuplicateWarning(`Teléfono ya registrado en el Folio SIAC ${existingVenta.folio || existingVenta.folioSiac}. Estatus: ${existingVenta.estado || existingVenta.estatus1}`);
+        return;
+      }
+
+      // Check specifically for Moroso status (simulated or real)
+      const moroso = morosos.find((m: any) => (m.telefonoTitular === phone || m.telefonoAsig === phone) && m.estadoMoroso);
+      if (moroso) {
+        setDuplicateWarning(`CLIENTE MOROSO DETECTADO. No procede con la venta por políticas de riesgo.`);
+      }
+    } catch (e) {
+      console.error("Error checking duplicates:", e);
+    } finally {
+      setIsCheckingDuplicate(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (form.telefonoTitular && form.telefonoTitular.length === 10) {
+      checkDuplicates(form.telefonoTitular);
+    }
+  }, [form.telefonoTitular, checkDuplicates]);
+
+  useEffect(() => {
+    // Intentar cargar catálogos desde la API
+    api.get('/admin/packages').then(res => {
+      if (res && res.length > 0) setPackageCatalog(res);
+    }).catch(console.error);
+
+    api.get('/admin/platforms').then(res => {
+      if (res && res.length > 0) setExtraPlatforms(res);
+    }).catch(() => {}); // Fallback a estático
+  }, []);
+
+  const isExpedienteCompleto = () => {
+    const hasId = docType === 'ine' ? (!!form.ineFrente && !!form.ineReverso) : !!form.curpDoc;
+    const hasAddress = form.mismaDireccionIne || !!form.comprobanteDomicilio;
+    const hasContract = signatureConfirmed;
+    const hasVideo = !!form.videoFirmaUrl || !!form.videoFirmaBlob;
+    const hasSica = !!form.folioSica;
+    const hasValidation = !form.validacionIAActiva || aiCallDone; // Si está desactivada o hecha
+    
+    let isComplete = hasId && hasAddress && hasContract && hasVideo && hasSica && hasValidation;
+
+    if (form.tipoCliente === 'portado') {
+      isComplete = isComplete && !!form.anexoPortabilidadFrente && !!form.anexoPortabilidadReverso;
+    }
+
+    return isComplete;
+  };
 
   const receiptRef = useRef<HTMLDivElement>(null);
 
@@ -713,7 +808,7 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
 
   /* Package */
   const getAvailablePackages = () =>
-    PACKAGE_CATALOG.filter(
+    packageCatalog.filter(
       pkg =>
         pkg.segment === form.tipoServicio &&
         pkg.category === form.categoriaProducto &&
@@ -963,9 +1058,44 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
       alert('Por favor graba el video de consentimiento antes de finalizar.');
       return;
     }
+
+    setExporting(true);
+    
+    // AI analysis before finalize
+    const aiAnalysis = await aiAgent.analyzeExpediente({
+      hasIne: !!form.ineFrente && !!form.ineReverso,
+      hasCurp: !!form.curpDoc,
+      hasAddress: form.mismaDireccionIne || !!form.comprobanteDomicilio,
+      hasSignedDoc: signatureConfirmed,
+      hasVideoSignature: !!form.videoFirmaUrl || !!form.videoFirmaBlob,
+      hasAudioCall: aiCallDone,
+      hasPortability: !!form.anexoPortabilidadFrente && !!form.anexoPortabilidadReverso,
+      isPortabilityClient: form.tipoCliente === 'portado',
+      hasFolioSica: !!form.folioSica
+    });
+
+    setAiValidationResult(aiAnalysis);
+
+    const status = isExpedienteCompleto() ? 'completo' : 'incompleto';
+    const finalData = { ...form, statusExpediente: status };
+    
+    if (form.validacionIAActiva && !aiCallDone) {
+      const proceed = confirm('La validación por IA no se ha completado. El expediente se guardará como "INCOMPLETO". ¿Desea continuar?');
+      if (!proceed) return;
+    }
+
     try {
-      await api.post('/ventas', { ...form, estado: 'pendiente' });
-      alert('Expediente registrado y enviado a validación correctamente.');
+      await api.post('/ventas', { 
+        ...form, 
+        statusExpediente: status,
+        estado: 'pendiente' 
+      });
+      
+      if (status === 'incompleto') {
+        alert('Expediente registrado pero marcado como INCOMPLETO. Por favor, adjunte los documentos faltantes desde el panel de control.');
+      } else {
+        alert('Expediente registrado y validado correctamente.');
+      }
       onBack();
     } catch (err: any) {
       alert('Error al guardar: ' + (err.message || 'Intenta de nuevo.'));
@@ -974,8 +1104,7 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
 
   const shouldShowStreamingChoice = () =>
     form.tipoServicio === 'residencial' &&
-    form.categoriaProducto === 'doble_play' &&
-    selectedPackage?.allowsStreamingChoice;
+    (form.categoriaProducto === 'doble_play' || form.categoriaProducto === 'infinitum_puro');
 
   const availablePackages = getAvailablePackages();
   const terms = getTermsContent();
@@ -1062,6 +1191,27 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
               ))}
             </div>
 
+            {/* Datos de Captura (Read-only) para evitar capturas en otras claves */}
+            <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-6">
+              <h2 className="text-base font-black text-white flex items-center gap-2 mb-4">
+                <Shield className="w-5 h-5 text-indigo-400" /> Clave de Vendedor Activa
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">Fecha de Captura</label>
+                  <input type="date" disabled value={form.fechaSolicitud} className="w-full bg-slate-950/50 border border-white/10 rounded-xl p-3 text-slate-400 text-sm opacity-70 cursor-not-allowed" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">ID Promotor (Usuario)</label>
+                  <input type="text" disabled value={form.usuario} className="w-full bg-slate-950/50 border border-white/10 rounded-xl p-3 text-slate-400 text-sm opacity-70 cursor-not-allowed" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">Nombre del Vendedor</label>
+                  <input type="text" disabled value={form.asesorNombre} className="w-full bg-slate-950/50 border border-white/10 rounded-xl p-3 text-slate-400 text-sm opacity-70 cursor-not-allowed" />
+                </div>
+              </div>
+            </div>
+
             {/* Document upload section */}
             <div className="bg-slate-950/40 border border-white/5 rounded-3xl p-6 space-y-6">
               <h2 className="text-base font-black text-white flex items-center gap-2">
@@ -1146,6 +1296,26 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                   </div>
                 ))}
               </div>
+
+              {/* Duplicate Warning */}
+              {duplicateWarning && (
+                <div className={cn(
+                  "mt-4 p-4 rounded-xl border flex items-start gap-3 animate-in slide-in-from-top-2 duration-300",
+                  duplicateWarning.includes('MOROSO') 
+                    ? "bg-red-500/20 border-red-500/40 text-red-300"
+                    : "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                )}>
+                  <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-black uppercase tracking-wider text-[10px] mb-1">Conflicto de Registro Detectado</p>
+                    <p className="font-medium">{duplicateWarning}</p>
+                    {isCheckingDuplicate && <Loader2 className="w-3 h-3 animate-spin mt-2" />}
+                  </div>
+                </div>
+              )}
+            </div>
+
+              )}
             </div>
 
             {/* Domicilio */}
@@ -1409,14 +1579,90 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
             <h2 className="text-xl font-black text-white">Detalles Adicionales</h2>
 
             {shouldShowStreamingChoice() && (
-              <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-xl p-6">
-                <label className="flex items-center gap-2 font-bold text-white mb-3"><Tv className="w-5 h-5 text-indigo-400" /> Elige tu beneficio de streaming por {selectedPackage?.streamingMonths || 6} meses</label>
-                <select value={form.streamingElegido} onChange={e => updateForm({ streamingElegido: e.target.value as any })}
-                  className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-white focus:ring-1 focus:ring-indigo-500">
-                  <option value="ninguno">Selecciona (Opcional)</option>
-                  <option value="netflix">Netflix</option>
-                  <option value="hbo_max">HBO Max</option>
-                </select>
+              <div className="bg-indigo-950/30 border border-indigo-500/20 rounded-2xl p-6">
+                <label className="flex items-center gap-2 font-bold text-white mb-4">
+                  <Sparkles className="w-5 h-5 text-indigo-400" /> 
+                  Beneficio de Promoción (6 meses gratis)
+                </label>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {form.categoriaProducto === 'doble_play' ? (
+                    <>
+                      <button
+                        onClick={() => updateForm({ streamingPromo: 'netflix_promo_2p' })}
+                        className={cn(
+                          "p-4 rounded-xl border text-left transition-all",
+                          form.streamingPromo === 'netflix_promo_2p' ? "bg-red-600/20 border-red-500 text-white" : "bg-slate-900 border-white/5 text-slate-400"
+                        )}
+                      >
+                        <div className="font-bold">Netflix</div>
+                        <div className="text-[10px] opacity-70">2 Pantallas con Anuncios</div>
+                      </button>
+                      <button
+                        onClick={() => updateForm({ streamingPromo: 'hbo_promo_2p' })}
+                        className={cn(
+                          "p-4 rounded-xl border text-left transition-all",
+                          form.streamingPromo === 'hbo_promo_2p' ? "bg-indigo-600/20 border-indigo-500 text-white" : "bg-slate-900 border-white/5 text-slate-400"
+                        )}
+                      >
+                        <div className="font-bold">HBO Max</div>
+                        <div className="text-[10px] opacity-70">2 Pantallas con Anuncios</div>
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => updateForm({ streamingPromo: 'hbo_promo_2p' })}
+                      className={cn(
+                        "p-4 rounded-xl border text-left transition-all col-span-2",
+                        form.streamingPromo === 'hbo_promo_2p' ? "bg-indigo-600/20 border-indigo-500 text-white" : "bg-slate-900 border-white/5 text-slate-400"
+                      )}
+                    >
+                      <div className="font-bold">HBO Max Incluido por Promoción</div>
+                      <div className="text-[10px] opacity-70">2 Pantallas con Anuncios · 6 meses gratis</div>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {form.tipoServicio === 'residencial' && (
+              <div className="bg-slate-950/50 border border-white/10 rounded-2xl p-6">
+                <label className="flex items-center gap-2 font-bold text-white mb-4">
+                  <Plus className="w-5 h-5 text-emerald-400" />
+                  Plataformas Adicionales (Costo Extra)
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {extraPlatforms.map(plat => (
+                    <button
+                      key={plat.id}
+                      onClick={() => {
+                        const current = form.plataformasAdicionales || [];
+                        if (current.includes(plat.id)) {
+                          updateForm({ plataformasAdicionales: current.filter(id => id !== plat.id) });
+                        } else {
+                          updateForm({ plataformasAdicionales: [...current, plat.id] });
+                        }
+                      }}
+                      className={cn(
+                        "flex items-center justify-between p-3 rounded-xl border transition-all text-left",
+                        form.plataformasAdicionales?.includes(plat.id)
+                          ? "bg-emerald-500/10 border-emerald-500 text-white"
+                          : "bg-slate-900 border-white/5 text-slate-400 hover:border-white/20"
+                      )}
+                    >
+                      <div>
+                        <div className="text-xs font-bold">{plat.name}</div>
+                        <div className="text-[9px] opacity-60">+{formatCurrency(plat.price)}/mes</div>
+                      </div>
+                      <div className={cn(
+                        "w-5 h-5 rounded-lg flex items-center justify-center transition-colors",
+                        form.plataformasAdicionales?.includes(plat.id) ? "bg-emerald-500 text-white" : "bg-white/5"
+                      )}>
+                        {form.plataformasAdicionales?.includes(plat.id) && <Check className="w-3 h-3" />}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -1440,15 +1686,58 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                     <input type="text" maxLength={4} className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-white focus:ring-1 focus:ring-indigo-500 font-mono tracking-widest text-center" value={form.nip || ''} onChange={e => updateForm({ nip: e.target.value })} placeholder="1234" />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <DocumentUploader
+                    label="Anexo Portabilidad (Frente)"
+                    preview={form.anexoPortabilidadFrente}
+                    onFile={(b) => {
+                      updateForm({ anexoPortabilidadFrente: b });
+                      uploadToExpediente('anexo_port_frente', b, 'image/jpeg')
+                        .then(p => { if (p) updateForm({ anexoPortabilidadFrente: p }); });
+                    }}
+                    onClear={() => updateForm({ anexoPortabilidadFrente: undefined })}
+                  />
+                  <DocumentUploader
+                    label="Anexo Portabilidad (Reverso)"
+                    preview={form.anexoPortabilidadReverso}
+                    onFile={(b) => {
+                      updateForm({ anexoPortabilidadReverso: b });
+                      uploadToExpediente('anexo_port_reverso', b, 'image/jpeg')
+                        .then(p => { if (p) updateForm({ anexoPortabilidadReverso: p }); });
+                    }}
+                    onClear={() => updateForm({ anexoPortabilidadReverso: undefined })}
+                  />
+                </div>
               </div>
             )}
 
-            {!shouldShowStreamingChoice() && form.tipoCliente !== 'portado' && (
-              <div className="text-center py-12 text-slate-600">
-                <CheckCircle2 className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                <p>No se requieren datos adicionales para este paquete.</p>
+            <div className="bg-slate-950/50 border border-white/10 rounded-xl p-6 space-y-4">
+              <h3 className="font-bold text-white flex items-center gap-2"><FileScan className="w-5 h-5 text-emerald-400" /> Control Técnico SICA</h3>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">Folio SICA / Captura de Pantalla</label>
+                <div className="flex gap-4 items-start">
+                  <input
+                    type="text"
+                    placeholder="Ingrese Folio SICA..."
+                    className="flex-1 bg-slate-900 border border-white/10 rounded-xl p-3 text-white focus:ring-1 focus:ring-emerald-500"
+                    value={form.folioSica || ''}
+                    onChange={e => updateForm({ folioSica: e.target.value })}
+                  />
+                  <div className="w-48 shrink-0">
+                    <DocumentUploader
+                      label="Captura SICA"
+                      preview={form.folioSica} // Reutilizando el campo para la imagen si el usuario prefiere subir foto
+                      onFile={(b) => {
+                        updateForm({ folioSica: b });
+                        uploadToExpediente('sica_capture', b, 'image/jpeg')
+                          .then(p => { if (p) updateForm({ folioSica: p }); });
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
-            )}
+            </div>
 
             <div className="flex justify-between mt-10 pt-6 border-t border-white/5">
               <button onClick={handlePrev} className="px-8 py-3 bg-white/5 hover:bg-white/10 text-slate-300 text-[10px] font-black uppercase tracking-widest rounded-2xl border border-white/5 active:scale-95">Volver</button>
@@ -1546,8 +1835,18 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                       <li>Velocidad: <strong>{form.megas} Mbps</strong></li>
                       {form.lineasTelefonicas && <li>Líneas telefónicas: <strong>{form.lineasTelefonicas}</strong></li>}
                       {form.incluyeClaroVideo && <li>Claro Video: <strong>Incluido</strong></li>}
-                      {form.claroDrive && <li>Claro Drive: <strong>{form.claroDrive}</strong></li>}
-                      {form.antivirus && <li>Antivirus: <strong>{form.antivirus}</strong></li>}
+                      {form.streamingPromo && (
+                        <li className="text-blue-600 font-bold">
+                          Promoción: {form.streamingPromo.includes('netflix') ? 'Netflix 6 meses gratis' : 'HBO Max 6 meses gratis'}
+                        </li>
+                      )}
+                      {form.plataformasAdicionales && form.plataformasAdicionales.length > 0 && (
+                        <li>
+                          Extras: <strong>
+                            {form.plataformasAdicionales.map(id => extraPlatforms.find(p => p.id === id)?.name).join(', ')}
+                          </strong>
+                        </li>
+                      )}
                     </ul>
                   </div>
                 </section>
@@ -1635,15 +1934,20 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                   <Signature className="w-5 h-5 text-indigo-400" /> Firma Digital
                 </h3>
                 <SignaturePad
-                  onSignatureConfirm={(base64) => {
+                  onSignatureConfirm={(base64, videoBlobUrl, videoBase64) => {
                     setSignatureBase64(base64);
                     setSignatureConfirmed(true);
-                    updateForm({ videoFirmaUrl: base64 });
+                    updateForm({ videoFirmaUrl: videoBlobUrl || base64 });
                     // Sube la video-firma al expediente. Usa el mimetype real
-                    // detectado en el data-URL (image/png para firmas dibujadas,
-                    // video/webm si SignaturePad pasa a usar MediaRecorder).
+                    // detectado en el data-URL (image/png para firmas dibujadas)
                     uploadToExpediente('videofirma', base64, detectMime(base64, 'image/png'))
                       .then(p => { if (p) updateForm({ videoFirmaPath: p }); });
+                      
+                    // Si también grabamos video, lo subimos
+                    if (videoBase64) {
+                      uploadToExpediente('videofirma_video', videoBase64, 'video/webm')
+                        .then(p => { if (p) updateForm({ videoFirmaPath: p }); }); // guardamos el path del video
+                    }
                   }}
                   showCamera={true}
                 />
@@ -1694,60 +1998,158 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                       ['Constancia NOM-151',   'GENERADA',   'text-emerald-400'],
                       ['Timestamp',            new Date().toLocaleString('es-MX'), 'text-slate-300'],
                       ['Firma Digital',        signatureConfirmed ? 'CONFIRMADA ✓' : 'PENDIENTE', signatureConfirmed ? 'text-emerald-400' : 'text-amber-400'],
-                      ['Validación IA',        aiCallDone ? 'COMPLETADA ✓' : 'NO REALIZADA', aiCallDone ? 'text-emerald-400' : 'text-slate-500'],
+                      ['Validación IA (Llamada)', aiCallDone ? 'COMPLETADA ✓' : 'NO REALIZADA', aiCallDone ? 'text-emerald-400' : 'text-slate-500'],
+                      ['Estatus Expediente',   isExpedienteCompleto() ? 'COMPLETO ✓' : 'INCOMPLETO', isExpedienteCompleto() ? 'text-emerald-400' : 'text-red-400'],
                     ].map(([k, v, c]) => (
                       <div key={k} className="flex justify-between items-center text-xs border-b border-white/5 pb-2 last:border-0">
                         <span className="text-slate-500">{k}</span>
                         <span className={cn('font-bold font-mono', c)}>{v}</span>
                       </div>
                     ))}
+                    {aiValidationResult && (
+                      <div className={cn(
+                        "mt-4 p-3 rounded-xl border text-[10px] leading-relaxed",
+                        aiValidationResult.status === 'completo' 
+                          ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+                          : "bg-red-500/10 border-red-500/20 text-red-300"
+                      )}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <Bot className="w-3 h-3" />
+                          <span className="font-black uppercase tracking-widest">Análisis del Agente de IA</span>
+                        </div>
+                        {aiValidationResult.message}
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 {/* AI Call button - highlighted when signature confirmed */}
                 <div className={cn(
-                  'rounded-2xl p-5 space-y-3 border transition-all',
+                  'rounded-2xl p-5 space-y-4 border transition-all',
                   signatureConfirmed
                     ? 'bg-gradient-to-br from-blue-900/80 to-indigo-900/80 border-blue-400/60 shadow-lg shadow-blue-500/30'
                     : 'bg-gradient-to-br from-blue-950/60 to-indigo-950/60 border-blue-500/20'
                 )}>
-                  <h3 className="text-white font-black text-sm flex items-center gap-2">
-                    <Bot className={cn('w-4 h-4', signatureConfirmed ? 'text-blue-300 animate-pulse' : 'text-blue-400')} /> Llamada de Validación IA
-                  </h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-white font-black text-sm flex items-center gap-2">
+                      <Bot className={cn('w-4 h-4', signatureConfirmed ? 'text-blue-300 animate-pulse' : 'text-blue-400')} /> Validación IA
+                    </h3>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={form.validacionIAActiva}
+                        onChange={e => updateForm({ validacionIAActiva: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                  </div>
 
-                  {signatureConfirmed && !aiCallDone && (
-                    <div className="flex items-center gap-2 text-blue-300 text-xs font-bold bg-blue-500/20 rounded-lg px-3 py-2">
-                      <Check className="w-4 h-4" /> Firma confirmada - listo para llamada
-                    </div>
-                  )}
-
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Un agente de IA llamará al cliente para confirmar la contratación del servicio y registrar su validación verbal.
-                  </p>
-
-                  {aiCallDone ? (
-                    <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
-                      <CheckCircle2 className="w-4 h-4" /> Llamada de validación completada
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setShowAICall(true)}
-                      disabled={!form.telefonoTitular || !signatureConfirmed}
-                      className={cn(
-                        'w-full flex items-center justify-center gap-2 text-white py-3 rounded-xl font-bold text-sm transition-all shadow-lg',
-                        signatureConfirmed
-                          ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-blue-500/40 hover:scale-[1.02]'
-                          : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20'
+                  {form.validacionIAActiva ? (
+                    <>
+                      {signatureConfirmed && !aiCallDone && (
+                        <div className="flex items-center gap-2 text-blue-300 text-xs font-bold bg-blue-500/20 rounded-lg px-3 py-2">
+                          <Check className="w-4 h-4" /> Firma confirmada - listo para llamada
+                        </div>
                       )}
-                      title={!signatureConfirmed ? 'Completa la firma para habilitar' : ''}
-                    >
-                      <PhoneCall className="w-4 h-4" /> Iniciar Llamada IA
-                    </button>
+
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Un agente de IA llamará al cliente para confirmar la contratación del servicio y registrar su validación verbal.
+                      </p>
+
+                      {aiCallDone ? (
+                        <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
+                          <CheckCircle2 className="w-4 h-4" /> Llamada de validación completada
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setShowAICall(true)}
+                          disabled={!form.telefonoTitular || !signatureConfirmed}
+                          className={cn(
+                            'w-full flex items-center justify-center gap-2 text-white py-3 rounded-xl font-bold text-sm transition-all shadow-lg',
+                            signatureConfirmed
+                              ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-blue-500/40 hover:scale-[1.02]'
+                              : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20'
+                          )}
+                          title={!signatureConfirmed ? 'Completa la firma para habilitar' : ''}
+                        >
+                          <PhoneCall className="w-4 h-4" /> Iniciar Llamada IA
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                      <p className="text-xs text-amber-400 font-medium">
+                        La validación por IA ha sido desactivada. El expediente se marcará como "Pendiente de Validación Manual".
+                      </p>
+                    </div>
                   )}
 
                   {!form.telefonoTitular && (
                     <p className="text-[9px] text-amber-500">Ingresa el teléfono del cliente en el paso 1 para habilitar esta función.</p>
                   )}
+                </div>
+
+                {/* ── Control Técnico SICA y Portabilidad (MOVIDO AQUÍ) ── */}
+                <div className={cn(
+                  "bg-slate-950/80 border border-white/10 rounded-2xl p-6 space-y-6 transition-all",
+                  signatureConfirmed && (!form.validacionIAActiva || aiCallDone) ? "ring-2 ring-indigo-500/50 shadow-2xl shadow-indigo-500/20" : "opacity-80"
+                )}>
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center">
+                      <FileScan className="w-6 h-6 text-indigo-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-black text-sm uppercase tracking-wider">Control Técnico SICA</h3>
+                      <p className="text-[10px] text-slate-500 font-bold">Captura final de folio y portabilidad</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">FOLIO SIAC / CAPTURA DE PANTALLA</label>
+                      <div className="flex gap-3">
+                        <input
+                          type="text"
+                          placeholder="Ingrese Folio SIAC..."
+                          className="flex-1 bg-slate-900/50 border border-white/10 rounded-xl p-4 text-white focus:ring-1 focus:ring-indigo-500 text-sm font-mono"
+                          value={form.folioSica || ''}
+                          onChange={e => updateForm({ folioSica: e.target.value })}
+                        />
+                        <div className="shrink-0">
+                           <DocumentUploader
+                              label="Captura SICA"
+                              preview={form.folioSicaPath}
+                              onFile={(b64) => updateForm({ folioSicaPath: b64 })}
+                              onClear={() => updateForm({ folioSicaPath: undefined })}
+                              captureMode="environment"
+                           />
+                        </div>
+                      </div>
+                    </div>
+
+                    {form.tipoCliente === 'portado' && (
+                      <div className="space-y-4 pt-4 border-t border-white/5">
+                        <p className="text-xs font-black text-blue-400 uppercase tracking-widest flex items-center gap-2">
+                          <RefreshCw className="w-4 h-4" /> Anexo de Portabilidad (Obligatorio)
+                        </p>
+                        <div className="grid grid-cols-2 gap-4">
+                          <DocumentUploader
+                            label="Frente Anexo"
+                            preview={form.anexoPortabilidadFrente}
+                            onFile={(b64) => updateForm({ anexoPortabilidadFrente: b64 })}
+                            onClear={() => updateForm({ anexoPortabilidadFrente: undefined })}
+                          />
+                          <DocumentUploader
+                            label="Reverso Anexo"
+                            preview={form.anexoPortabilidadReverso}
+                            onFile={(b64) => updateForm({ anexoPortabilidadReverso: b64 })}
+                            onClear={() => updateForm({ anexoPortabilidadReverso: undefined })}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Expediente summary */}
@@ -1764,11 +2166,14 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
                       ['Información del Cliente', true],
                       ['Contrato firmado',      true],
                       ['Firma Digital',         signatureConfirmed],
-                      ['Validación IA',         aiCallDone],
-                    ].map(([label, ok]) => (
+                      ['Validación IA',         !form.validacionIAActiva || aiCallDone, !form.validacionIAActiva ? 'MANUAL' : 'OK'],
+                      ['Folio SIAC',            !!form.folioSica],
+                      ...(form.tipoCliente === 'portado' ? [['Anexo Portabilidad', !!(form.anexoPortabilidadFrente && form.anexoPortabilidadReverso)]] : []),
+                    ].map(([label, ok, customStatus]) => (
                       <li key={label as string} className={cn('flex items-center gap-2', ok ? 'text-slate-200' : 'text-slate-600')}>
                         {ok ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <div className="w-3 h-3 rounded-full border border-slate-600 shrink-0" />}
-                        {label as string}
+                        <span className="flex-1">{label as string}</span>
+                        {ok && customStatus && <span className="text-[8px] font-black bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/30">{customStatus as string}</span>}
                       </li>
                     ))}
                   </ul>
@@ -1789,8 +2194,13 @@ export default function NewSaleForm({ onBack }: { onBack: () => void }) {
               <button onClick={handlePrev} className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition-all">Atrás</button>
               <button
                 onClick={handleFinalize}
-                disabled={!signatureConfirmed}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                disabled={!signatureConfirmed || (form.validacionIAActiva && !aiCallDone)}
+                className={cn(
+                  "px-8 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg transition-all",
+                  (!signatureConfirmed || (form.validacionIAActiva && !aiCallDone))
+                    ? "bg-slate-700 text-slate-500 cursor-not-allowed opacity-40"
+                    : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20"
+                )}
               >
                 <CheckCircle2 className="w-5 h-5" /> Finalizar y Cerrar Expediente
               </button>

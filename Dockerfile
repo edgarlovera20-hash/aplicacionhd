@@ -43,9 +43,13 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
+# Crear usuario no-root para reducir superficie de ataque.
+# Si un atacante logra RCE, NO tendrá permisos root dentro del contenedor.
+RUN addgroup -S app && adduser -S app -G app
+
 # Solo dependencias de producción (imagen más pequeña, sin devDeps)
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && chown -R app:app /app
 
 # Frontend compilado
 COPY --from=builder /app/build ./build
@@ -70,6 +74,9 @@ ENV PORT=3000
 # Health check para orchestradores
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
   CMD wget -qO- http://localhost:3000/health || exit 1
+
+# Cambiar al usuario no-root
+USER app
 
 # Arrancar con node puro — sin tsx, sin compilación en runtime
 CMD ["node", "dist/server.cjs"]
