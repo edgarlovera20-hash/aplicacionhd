@@ -14,6 +14,7 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: postgres://${POSTGRES_USER:-hdreams_user}:${POSTGRES_PASSWORD:-hdreams_pass}@db:5432/${POSTGRES_DB:-hdreams_crm}
+      REDIS_URL: redis://redis:6379
       # IA: cadena de fallback Claude -> Gemini -> OpenAI
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_TEXT_MODEL: ${CLAUDE_TEXT_MODEL:-claude-sonnet-4-6}
@@ -29,11 +30,35 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
       TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-}
+      # Telegram bots (comma-separated token:name pairs)
+      TELEGRAM_BOTS: ${TELEGRAM_BOTS:-}
+      # Facebook Messenger
+      FACEBOOK_VERIFY_TOKEN: ${FACEBOOK_VERIFY_TOKEN:-hdreams_fb_verify}
+      FACEBOOK_PAGE_TOKEN: ${FACEBOOK_PAGE_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - hdreams-net
+
+  # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  # ── Redis 7 ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: hdreams-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - hdreams-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
   db:
@@ -56,6 +81,8 @@ services:
 
 volumes:
   postgres-data:
+    driver: local
+  redis-data:
     driver: local
 
 networks:

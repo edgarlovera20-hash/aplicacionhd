@@ -3,7 +3,7 @@ import {
   Home, User, Wallet, Headphones,
   Bell, LogOut, PlusCircle, Activity,
   FileText, ChevronLeft, Menu, Users, Gamepad2, ClipboardCheck, FileSearch, Megaphone, X, Settings as SettingsIcon,
-  Loader2
+  Loader2, Inbox, TrendingUp
 } from 'lucide-react';
 import Logo from '../ui/Logo';
 import { Role } from '../../App';
@@ -16,6 +16,8 @@ const ConsultasSeguimiento = lazy(() => import('./ConsultasSeguimiento'));
 const Payroll              = lazy(() => import('./Payroll'));
 const Announcements        = lazy(() => import('./Announcements'));
 const SettingsView         = lazy(() => import('./Settings'));
+const MessagingHub         = lazy(() => import('./MessagingHub'));
+const LeadPipeline         = lazy(() => import('../crm/LeadPipeline'));
 
 const SectionLoader = () => (
   <div className="flex items-center justify-center h-48">
@@ -60,8 +62,10 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
     ];
   } else if (role === 'RECLUTADORA') {
     availableSections = [
-      { id: 'Perfil',                label: 'Perfil',       icon: User },
-      { id: 'Reclutamiento',         label: 'Reclutamiento',icon: Users },
+      { id: 'Perfil',        label: 'Perfil',        icon: User },
+      { id: 'Reclutamiento', label: 'Reclutamiento', icon: Users },
+      { id: 'Mensajería',    label: 'Mensajería',    icon: Inbox },
+      { id: 'Pipeline',      label: 'Pipeline',      icon: TrendingUp },
     ];
   } else if (role === 'SUPERVISOR') {
     availableSections = [
@@ -124,7 +128,9 @@ export default function MobileUserView({ role, onBack, onClearRole }: MobileUser
         {activeSection === 'Consulta y Seguimiento' && <Suspense fallback={<SectionLoader />}><ConsultasSeguimiento /></Suspense>}
         {activeSection === 'Nóminas' && <Suspense fallback={<SectionLoader />}><Payroll /></Suspense>}
         {activeSection === 'Anuncios' && <Suspense fallback={<SectionLoader />}><Announcements /></Suspense>}
-        {activeSection === 'Ajustes' && <Suspense fallback={<SectionLoader />}><SettingsView /></Suspense>}
+        {activeSection === 'Ajustes'       && <Suspense fallback={<SectionLoader />}><SettingsView /></Suspense>}
+        {activeSection === 'Mensajería'    && <Suspense fallback={<SectionLoader />}><MessagingHub /></Suspense>}
+        {activeSection === 'Pipeline'      && <Suspense fallback={<SectionLoader />}><LeadPipeline /></Suspense>}
       </div>
 
       {/* Full Screen Menu Overlay */}
