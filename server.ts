@@ -143,6 +143,10 @@ async function startServer() {
   });
 
   // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
+  const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
+
+
   app.use(express.json({ limit: '10mb' }));
 
   // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
@@ -574,6 +578,31 @@ async function startServer() {
       accion: string; modulo: string; detalles?: any; ts: string;
     };
 
+  /** Emite access + refresh tokens y persiste el hash del refresh en DB */
+  const issueTokenPair = async (uid: string, email: string, role: string) => {
+    const payload = { uid, email, role };
+    const accessToken  = signAccessToken(payload);
+    const refreshToken = signRefreshToken(payload);
+    if (isDbConnected) {
+      const tokenHash = hashToken(refreshToken);
+      await pool.query(
+        `INSERT INTO refresh_tokens (user_uid, token_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+        [uid, tokenHash]
+      );
+    }
+    return { accessToken, refreshToken };
+  };
+
+  /** Opciones de cookie para el refresh token */
+  const refreshCookieOpts = {
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure:   IS_PROD,
+    maxAge:   7 * 24 * 60 * 60 * 1000,
+    path:     '/api/auth',
+  };
+
     type MockDB = {
       users: MockUser[]; ventas: any[]; botCandidates: BotCandidate[];
       expenses: Expense[]; userPrefs: UserPref[];
@@ -897,6 +926,57 @@ async function startServer() {
         const parsed = registerSchema.safeParse(req.body);
         if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
         const { inviteToken, password, nombres, apellidoPaterno, usuario } = parsed.data;
+      audit(sess.uid, sess.email, 'CREATE_INVITATION', 'auth', { email, role });
+      res.status(201).json({ token, email, role, expiresAt: expiresAt.toISOString() });
+    } catch (e: any) {
+      console.error('[invitations]', e);
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Listar invitaciones activas (gerente/administracion) ─────────────────
+  app.get("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      if (isDbConnected) {
+        const { rows } = await pool.query(
+          "SELECT id, email, role, nombres, expires_at, used, created_at FROM invitations ORDER BY created_at DESC LIMIT 100"
+        );
+        res.json(rows);
+      } else {
+        const inv = (mockDb as any).__invitations as Map<string, any> | undefined;
+        if (!inv) return res.json([]);
+        const list = Array.from(inv.entries()).map(([token, v]) => ({ token, ...v }));
+        res.json(list);
+      }
+  // ── Revocar invitación ───────────────────────────────────────────────────
+  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const { token } = req.params;
+      if (isDbConnected) {
+        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
+      } else {
+        (mockDb as any).__invitations?.delete(token);
+      }
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
+
+  // ── Revocar invitación ───────────────────────────────────────────────────
+  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
+    try {
+      const { token } = req.params;
+      if (isDbConnected) {
+        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
+      } else {
+        (mockDb as any).__invitations?.delete(token);
+      }
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Error en el servidor' });
+    }
+  });
 
         let finalEmail: string;
         let finalRole: string;
@@ -4907,6 +4987,310 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
         try { await pool.query('DELETE FROM leads WHERE id=$1', [req.params.id]); res.json({ ok: true }); }
         catch (e: any) { res.status(500).json({ error: e.message }); }
       });
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  CONVERSATIONS HUB (Phase 2)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/conversations — list with optional filters
+  app.get('/api/conversations', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','SEGUIMIENTO'), async (req, res) => {
+    const { channel, status, agent_id, limit = '50', offset = '0' } = req.query as Record<string, string>;
+    if (!isDbConnected) return res.json([]);
+    try {
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      if (channel)  { params.push(channel);   conditions.push(`c.channel = $${params.length}`); }
+      if (status)   { params.push(status);    conditions.push(`c.status = $${params.length}`); }
+      if (agent_id) { params.push(agent_id);  conditions.push(`c.agent_id = $${params.length}`); }
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      params.push(parseInt(limit) || 50, parseInt(offset) || 0);
+      const sql = `
+        SELECT c.*,
+               (SELECT content FROM conv_messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+               (SELECT COUNT(*) FROM conv_messages WHERE conversation_id = c.id AND direction = 'inbound') AS message_count
+        FROM conversations c ${where}
+        ORDER BY c.updated_at DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`;
+      const result = await pool.query(sql, params);
+      res.json(result.rows);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // GET /api/conversations/:id — detail + messages
+  app.get('/api/conversations/:id', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','SEGUIMIENTO'), async (req, res) => {
+    if (!isDbConnected) return res.status(404).json({ error: 'Not found' });
+    try {
+      const [conv, msgs] = await Promise.all([
+        pool.query('SELECT * FROM conversations WHERE id = $1', [req.params.id]),
+        pool.query('SELECT * FROM conv_messages WHERE conversation_id = $1 ORDER BY created_at ASC', [req.params.id]),
+      ]);
+      if (!conv.rows[0]) return res.status(404).json({ error: 'Conversación no encontrada' });
+      res.json({ ...conv.rows[0], messages: msgs.rows });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // PATCH /api/conversations/:id — update status/assign agent
+  app.patch('/api/conversations/:id', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','SEGUIMIENTO'), async (req, res) => {
+    const { status, agent_id, intent } = req.body || {};
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    try {
+      const fields: string[] = [];
+      const params: unknown[] = [];
+      if (status)   { params.push(status);   fields.push(`status = $${params.length}`); }
+      if (agent_id) { params.push(agent_id); fields.push(`agent_id = $${params.length}`); }
+      if (intent)   { params.push(intent);   fields.push(`intent = $${params.length}`); }
+      if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar' });
+      params.push(req.params.id);
+      const result = await pool.query(
+        `UPDATE conversations SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${params.length} RETURNING *`,
+        params
+      );
+      res.json(result.rows[0] || {});
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // POST /api/conversations/:id/send — manual outbound message
+  app.post('/api/conversations/:id/send', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','SEGUIMIENTO'), async (req, res) => {
+    const { text } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'text requerido' });
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    try {
+      const conv = await pool.query('SELECT * FROM conversations WHERE id = $1', [req.params.id]);
+      if (!conv.rows[0]) return res.status(404).json({ error: 'Conversación no encontrada' });
+      const { channel, external_id } = conv.rows[0];
+
+      let sent = false;
+      if (channel === 'telegram') {
+        // Find a matching bot — use first active one
+        const bots = telegramEngine.getActiveBots();
+        if (bots[0]) sent = await telegramEngine.sendMessage(bots[0].botId, external_id, text);
+      } else if (channel === 'facebook') {
+        sent = await facebookEngine.sendMessage(external_id, text);
+      }
+      // WhatsApp: handled by existing /api/wa-sessions/:id/send — out of scope here
+
+      await pool.query(
+        `INSERT INTO conv_messages (conversation_id, direction, content, ai_generated) VALUES ($1, 'outbound', $2, false)`,
+        [req.params.id, text]
+      );
+      res.json({ ok: sent });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  LEADS PIPELINE (Phase 4)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  app.get('/api/leads', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','RECLUTADORA'), async (req, res) => {
+    const { stage, min_score, assigned_to, limit = '100', offset = '0' } = req.query as Record<string, string>;
+    if (!isDbConnected) return res.json([]);
+    try {
+      const conds: string[] = []; const params: unknown[] = [];
+      if (stage)       { params.push(stage);       conds.push(`stage = $${params.length}`); }
+      if (min_score)   { params.push(parseInt(min_score)); conds.push(`score >= $${params.length}`); }
+      if (assigned_to) { params.push(assigned_to); conds.push(`assigned_to = $${params.length}`); }
+      const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+      params.push(parseInt(limit) || 100, parseInt(offset) || 0);
+      const r = await pool.query(
+        `SELECT * FROM leads ${where} ORDER BY score DESC, updated_at DESC LIMIT $${params.length-1} OFFSET $${params.length}`,
+        params
+      );
+      res.json(r.rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/leads/stats', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','RECLUTADORA'), async (_req, res) => {
+    if (!isDbConnected) return res.json([]);
+    try {
+      const r = await pool.query(`SELECT stage, COUNT(*) as count FROM leads GROUP BY stage ORDER BY stage`);
+      res.json(r.rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/leads', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','RECLUTADORA'), async (req, res) => {
+    const { nombre, telefono, email, canal, score = 0, stage = 'new', source = 'manual', assigned_to, notes, conversation_id } = req.body || {};
+    if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    try {
+      const r = await pool.query(
+        `INSERT INTO leads (nombre,telefono,email,canal,score,stage,source,assigned_to,notes,conversation_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [nombre, telefono||null, email||null, canal||'manual', score, stage, source, assigned_to||null, notes||null, conversation_id||null]
+      );
+      res.status(201).json(r.rows[0]);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/leads/:id', requireRole('GERENTE','ADMINISTRACION','SUPERVISOR','RECLUTADORA'), async (req, res) => {
+    const allowed = ['stage','score','assigned_to','notes','email','telefono'];
+    const fields: string[] = []; const params: unknown[] = [];
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) { params.push(req.body[k]); fields.push(`${k} = $${params.length}`); }
+    }
+    if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar' });
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    params.push(req.params.id);
+    try {
+      const r = await pool.query(
+        `UPDATE leads SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${params.length} RETURNING *`, params
+      );
+      res.json(r.rows[0] || {});
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/leads/:id', requireRole('GERENTE','ADMINISTRACION'), async (req, res) => {
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    try { await pool.query('DELETE FROM leads WHERE id=$1', [req.params.id]); res.json({ ok: true }); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ═══════════════��═══════════════════════════════════════════════════════════
+  //  AUTOMATIONS (Phase 5)
+  // ════════════════════════════════════════════════════════════��══════════════
+
+  app.get('/api/automations', requireRole('GERENTE','ADMINISTRACION'), async (_req, res) => {
+    if (!isDbConnected) return res.json([]);
+    try { const r = await pool.query('SELECT * FROM automations ORDER BY created_at DESC'); res.json(r.rows); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/automations', requireRole('GERENTE','ADMINISTRACION'), async (req, res) => {
+    const { name, description, trigger_type, conditions = [], actions = [] } = req.body || {};
+    if (!name || !trigger_type) return res.status(400).json({ error: 'name y trigger_type requeridos' });
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    const sess = peekSession(req);
+    try {
+      const r = await pool.query(
+        `INSERT INTO automations (name,description,trigger_type,conditions,actions,created_by)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [name, description||null, trigger_type, JSON.stringify(conditions), JSON.stringify(actions), sess.uid||null]
+      );
+      res.status(201).json(r.rows[0]);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/automations/:id', requireRole('GERENTE','ADMINISTRACION'), async (req, res) => {
+    const allowed = ['name','description','trigger_type','conditions','actions','enabled'];
+    const fields: string[] = []; const params: unknown[] = [];
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) {
+        const v = (k === 'conditions' || k === 'actions') ? JSON.stringify(req.body[k]) : req.body[k];
+        params.push(v); fields.push(`${k} = $${params.length}`);
+      }
+    }
+    if (!fields.length) return res.status(400).json({ error: 'Nada que actualizar' });
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    params.push(req.params.id);
+    try {
+      const r = await pool.query(
+        `UPDATE automations SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${params.length} RETURNING *`, params
+      );
+      res.json(r.rows[0] || {});
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/automations/:id', requireRole('GERENTE'), async (req, res) => {
+    if (!isDbConnected) return res.status(503).json({ error: 'DB no disponible' });
+    try { await pool.query('DELETE FROM automations WHERE id=$1', [req.params.id]); res.json({ ok: true }); }
+    catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Telegram webhook ─────────────────────────────────���────────────────────
+  // POST /api/webhooks/telegram/:botId
+  app.post('/api/webhooks/telegram/:botId', (req, res) => {
+    telegramEngine.processWebhookUpdate(req.params.botId, req.body);
+    res.sendStatus(200);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  ANALYTICS (Phase 6)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/analytics/metrics?metric=messages_received&granularity=hour&date=YYYY-MM-DD
+  app.get('/api/analytics/metrics', requireRole('GERENTE','ADMINISTRACION'), async (req, res) => {
+    const { metric = 'messages_received', granularity = 'hour', date } = req.query as Record<string, string>;
+    try {
+      if (granularity === 'hour') {
+        const d = date || new Date().toISOString().slice(0, 10);
+        const data = await getHourlyMetric(metric as any, d);
+        return res.json({ metric, granularity, date: d, data });
+      }
+      // daily
+      const month = date?.slice(0, 7) || new Date().toISOString().slice(0, 7);
+      const data = await getDailyMetric(metric as any, month);
+      res.json({ metric, granularity, month, data });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/analytics/conversations — conversion funnel from DB
+  app.get('/api/analytics/conversations', requireRole('GERENTE','ADMINISTRACION'), async (_req, res) => {
+    if (!isDbConnected) return res.json({ total: 0, byChannel: [], byStatus: [] });
+    try {
+      const [byChannel, byStatus] = await Promise.all([
+        pool.query('SELECT channel, COUNT(*) as count FROM conversations GROUP BY channel ORDER BY count DESC'),
+        pool.query('SELECT status, COUNT(*) as count FROM conversations GROUP BY status ORDER BY count DESC'),
+      ]);
+      res.json({ byChannel: byChannel.rows, byStatus: byStatus.rows });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/analytics/leads — pipeline funnel
+  app.get('/api/analytics/leads', requireRole('GERENTE','ADMINISTRACION'), async (_req, res) => {
+    if (!isDbConnected) return res.json([]);
+    try {
+      const r = await pool.query(`
+        SELECT stage, COUNT(*) as count, AVG(score) as avg_score,
+               AVG(EXTRACT(EPOCH FROM (updated_at - created_at))/86400) as avg_days
+        FROM leads GROUP BY stage ORDER BY
+          CASE stage WHEN 'new' THEN 1 WHEN 'contacted' THEN 2 WHEN 'qualified' THEN 3
+                     WHEN 'proposal' THEN 4 WHEN 'won' THEN 5 WHEN 'lost' THEN 6 ELSE 7 END`
+      );
+      res.json(r.rows);
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Facebook webhook ──────────────────────────────────────────────────────
+  // GET /api/webhooks/facebook — verification challenge
+  app.get('/api/webhooks/facebook', (req, res) => {
+    const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query as Record<string, string>;
+    const result = facebookEngine.verifyWebhook(mode, token, challenge);
+    if (result) return res.send(result);
+    res.sendStatus(403);
+  });
+
+  // POST /api/webhooks/facebook — incoming messages
+  app.post('/api/webhooks/facebook', (req, res) => {
+    facebookEngine.processEvent(req.body);
+    res.sendStatus(200);
+  });
+  // Rate-limits — protegen endpoints que invocan IA, OCR o tocan datos críticos.
+  app.use('/api/auth/login',         rateLimit(10,  60_000));   // 10 intentos / min
+  app.use('/api/auth/register',      rateLimit(5,   300_000));  // 5 / 5 min
+  app.use('/api/auth/passkey',       rateLimit(20,  60_000));   // WebAuthn
+  app.use('/api/ocr',                rateLimit(30,  60_000));   // OCR llama Gemini
+  app.use('/api/expediente',         rateLimit(120, 60_000));   // uploads de expediente (INE, video, audio)
+  app.use('/api/ai',                 rateLimit(60,  60_000));   // chat IA general
+  app.use('/api/voice',              rateLimit(40,  60_000));   // Vapi/Twilio
+  app.use('/api/whatsapp',           rateLimit(60,  60_000));   // webhooks WA
+  app.use('/api/audit',              rateLimit(120, 60_000));   // auditoría
+  app.use('/api/profile/bank',       rateLimit(15,  60_000));   // datos bancarios
+  app.use('/api/payroll',            rateLimit(60,  60_000));   // nómina
+  app.use('/api/customers/import',   rateLimit(5,   300_000));  // imports masivos
+
+  // ================= VITE MIDDLEWARE (dev) / STATIC (prod) =================
+  if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'build');
+    app.use(express.static(distPath, { maxAge: '1y', immutable: true }));
+    app.get(/^(?!\/api).*/, (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
 
       // ═══════════════��═══════════════════════════════════════════════════════════
       //  AUTOMATIONS (Phase 5)
@@ -4958,6 +5342,120 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
         try { await pool.query('DELETE FROM automations WHERE id=$1', [req.params.id]); res.json({ ok: true }); }
         catch (e: any) { res.status(500).json({ error: e.message }); }
       });
+  // ── Redis + BullMQ init ───────────────────────────────────────────────────
+  await connectRedis();
+
+  // Inject pool into messageRouter for conversation persistence
+  injectPool(pool);
+
+  // ── Telegram bots init ───────────────────────────────────────────────────
+  await initTelegramBots();
+  // Wire all Telegram bots into the message router
+  for (const botCfg of telegramEngine.getActiveBots()) {
+    telegramEngine.onIncoming(botCfg.botId, async (msg) => {
+      await routeIncoming({
+        channel: 'telegram',
+        from: msg.chatId,
+        text: msg.text,
+        channelMeta: { botId: msg.botId, messageId: msg.messageId, from: msg.from },
+      });
+    });
+  }
+
+  // ── Facebook Messenger init ───────────────────────────────────────────────
+  facebookEngine.onIncoming(async (msg) => {
+    await routeIncoming({
+      channel: 'facebook',
+      from: msg.senderId,
+      text: msg.text,
+      channelMeta: { messageId: msg.messageId },
+    });
+  });
+
+  // ── AI Worker init (Phase 3) ──────────────────────────────────────────────
+  // Build a channel-agnostic sendToChannel helper
+  const sendToChannel = async (channel: string, from: string, text: string): Promise<boolean> => {
+    if (channel === 'telegram') {
+      const bots = telegramEngine.getActiveBots();
+      if (bots[0]) return telegramEngine.sendMessage(bots[0].botId, from, text);
+    } else if (channel === 'facebook') {
+      return facebookEngine.sendMessage(from, text);
+    }
+    return false;
+  };
+
+  injectWorkerDeps({
+    pool,
+    aiGenerate: (prompt: string) => aiGenerate(prompt),
+    sendToChannel,
+    addNotification: (n: unknown) => {
+      const notif = n as any;
+      pushNotif(notif.titulo || 'Notificación', notif.mensaje || '', notif.tipo || 'info', 'ai_worker', notif);
+    },
+  });
+  initAIWorker();
+
+  // ── Automation Engine init (Phase 5) ──────────────────────────��──────────
+  injectTriggerPool(pool);
+  injectAutomationDeps({
+    pool,
+    sendToChannel,
+    addNotification: (n: unknown) => {
+      const notif = n as any;
+      pushNotif(notif.titulo || 'Automatización', notif.mensaje || '', notif.tipo || 'info', 'automation', notif);
+    },
+  });
+  startTriggerPolling();
+  initAutomationWorker();
+
+  // Wire eventBus → automation trigger engine + analytics
+  eventBus.subscribe((event) => {
+    handleEvent(event).catch((err) => console.error('[EventBus→Trigger]', err.message));
+    // Record metrics
+    if (event.type === 'message.received')  recordMetric('messages_received').catch(() => {});
+    if (event.type === 'lead.created')      recordMetric('leads_created').catch(() => {});
+    if (event.type === 'automation.fired')  recordMetric('automations_fired').catch(() => {});
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[EventBus]', event.type, JSON.stringify(event.payload).slice(0, 120));
+    }
+  });
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`\nHeavenly Dreams CRM — ${process.env.NODE_ENV || 'development'} mode`);
+    console.log(`   -> http://localhost:${PORT}`);
+    console.log(`   -> DB: ${isDbConnected ? 'PostgreSQL' : 'Mock DB'}`);
+    console.log(`   -> Redis: ${process.env.REDIS_URL || 'redis://redis:6379'}`);
+    console.log(`   -> Agent registry: 6 system + recruitmentAgents (WA mode: ${whatsappEngine.getMode()})\n`);
+  });
+
+  // ── Graceful shutdown ─────────────────────────────────────────────────────
+  // Railway envía SIGTERM antes de matar el contenedor; queremos cerrar
+  // conexiones abiertas (HTTP, DB, SSE) limpiamente para no perder requests
+  // en vuelo.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[${signal}] Cerrando servidor...`);
+    const forceExit = setTimeout(() => {
+      console.error('[SHUTDOWN] Timeout de 10s — forzando salida.');
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+    server.close(async () => {
+      try { await pool.end(); } catch {}
+      try { stopTriggerPolling(); } catch {}
+      try { await closeAutomationWorker(); } catch {}
+      try { await closeAIWorker(); } catch {}
+      try { await closeQueues(); } catch {}
+      try { await disconnectRedis(); } catch {}
+      console.log('[SHUTDOWN] HTTP, DB y Redis cerrados. Bye.');
+      console.log('[SHUTDOWN] HTTP y DB cerrados. Bye.');
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
 
       // ── Telegram webhook ─────────────────────────────────���────────────────────
       // POST /api/webhooks/telegram/:botId

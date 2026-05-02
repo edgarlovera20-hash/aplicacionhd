@@ -6,6 +6,12 @@ import {
   LayoutDashboard,
   Loader2, FileText, Search, X,
   Headphones,
+  LogOut, TrendingUp, ArrowUpRight, ArrowDownRight,
+  LayoutDashboard, Settings as SettingsIcon, ChevronLeft,
+  User, ClipboardCheck, FileSearch, Wallet, Headphones, AlertTriangle, Megaphone, Loader2,
+  FileText, Database, Kanban, Search, MessageCircle,
+  BarChart2, X, Shield,
+  Brain, Inbox, Zap, TrendingUp as PipelineIcon,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -140,6 +146,104 @@ export default function ManagerView({ role, onBack, onClearRole }: ManagerViewPr
         mobileOpen={mobileSidebarOpen}
         onMobileClose={() => setMobileSidebarOpen(false)}
       />
+      {/* Mobile sidebar overlay backdrop */}
+      {mobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — hidden on mobile (overlay), visible md+ */}
+      <aside className={`
+        ${sidebarCollapsed ? 'w-14' : 'w-60 lg:w-56'}
+        glass-card border-r-0 border-white/5 flex flex-col rounded-2xl overflow-hidden relative z-40 transition-all duration-300
+        fixed md:relative inset-y-0 left-0 m-3
+        ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-[calc(100%+12px)] md:translate-x-0'}
+      `}>
+        <div className="h-16 flex items-center px-3 border-b border-white/5 shrink-0 relative">
+          {!sidebarCollapsed && (
+            <div className="flex items-center gap-3">
+              <Logo className="text-[40px]" />
+              <div className="flex flex-col">
+                <h1 className="text-sm font-black text-white tracking-tight leading-none">Heavenly Dreams</h1>
+                <p className="text-[9px] text-blue-400 font-bold tracking-[0.25em] uppercase mt-0.5">Enterprise CRM</p>
+              </div>
+            </div>
+          )}
+          {sidebarCollapsed && <Logo className="text-[32px] mx-auto" />}
+          <button
+            onClick={() => setSidebarCollapsed(c => !c)}
+            title={sidebarCollapsed ? 'Expandir menú' : 'Contraer menú'}
+            className={`absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700 transition-all shadow-lg z-30`}
+          >
+            <ChevronLeft className={`w-3 h-3 transition-transform duration-300 ${sidebarCollapsed ? 'rotate-180' : ''}`} />
+          </button>
+        </div>
+
+        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto custom-scrollbar overflow-x-hidden">
+          {role === 'GERENTE' && <NavItem icon={LayoutDashboard} label="Dashboard" active={activeSection === 'Dashboard'} onClick={() => setActiveSection('Dashboard')} collapsed={sidebarCollapsed} />}
+          <NavItem icon={User} label="Perfil" active={activeSection === 'Perfil'} onClick={() => setActiveSection('Perfil')} collapsed={sidebarCollapsed} />
+
+          {(role === 'GERENTE' || role === 'ADMINISTRACION' || role === 'SUPERVISOR' || role === 'VENDEDOR') && (
+            <div className="pt-2">
+              {!sidebarCollapsed && <p className="px-3 mb-1 text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">Operaciones</p>}
+              {sidebarCollapsed && <div className="h-px bg-white/5 mx-1 my-2" />}
+              <NavItem icon={ClipboardCheck} label="Captura & Validar" active={activeSection === 'Captura y Validación'} onClick={() => setActiveSection('Captura y Validación')} collapsed={sidebarCollapsed} />
+              <NavItem icon={FileSearch} label="Seguimiento" active={activeSection === 'Consulta y Seguimiento'} onClick={() => setActiveSection('Consulta y Seguimiento')} collapsed={sidebarCollapsed} />
+            </div>
+          )}
+
+          {(role === 'GERENTE' || role === 'ADMINISTRACION') && (
+            <div className="pt-2">
+              {!sidebarCollapsed && <p className="px-3 mb-1 text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">Gestión</p>}
+              {sidebarCollapsed && <div className="h-px bg-white/5 mx-1 my-2" />}
+              <NavItem icon={Wallet} label="Nóminas" active={activeSection === 'Nóminas'} onClick={() => setActiveSection('Nóminas')} collapsed={sidebarCollapsed} />
+              <NavItem icon={BarChart2} label="Reportes" active={activeSection === 'Reportes'} onClick={() => setActiveSection('Reportes')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Shield} label="Audit Log" active={activeSection === 'Audit Log'} onClick={() => setActiveSection('Audit Log')} collapsed={sidebarCollapsed} />
+              <NavItem icon={FileText} label="Sales CRM" active={activeSection === 'Sales CRM'} onClick={() => setActiveSection('Sales CRM')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Headphones} label="Soporte CRM" active={activeSection === 'Soporte a Clientes'} onClick={() => setActiveSection('Soporte a Clientes')} collapsed={sidebarCollapsed} />
+              <NavItem icon={MessageCircle} label="Seguimiento WA" active={activeSection === 'Seguimiento Clientes'} onClick={() => setActiveSection('Seguimiento Clientes')} highlight collapsed={sidebarCollapsed} />
+              <NavItem icon={AlertTriangle} label="Morosidad" active={activeSection === 'Morosidad'} onClick={() => setActiveSection('Morosidad')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Database} label="Analytics" active={activeSection === 'Analytics'} onClick={() => setActiveSection('Analytics')} collapsed={sidebarCollapsed} />
+              <NavItem icon={BarChart2} label="Analytics Pro" active={activeSection === 'Analytics Pro'} onClick={() => setActiveSection('Analytics Pro')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Kanban} label="CRM Interactivo" active={activeSection === 'CRM Interactivo'} onClick={() => setActiveSection('CRM Interactivo')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Inbox} label="Mensajería Hub" active={activeSection === 'Mensajería'} onClick={() => setActiveSection('Mensajería')} highlight collapsed={sidebarCollapsed} />
+              <NavItem icon={PipelineIcon} label="Pipeline Leads" active={activeSection === 'Pipeline'} onClick={() => setActiveSection('Pipeline')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Zap} label="Automatizaciones" active={activeSection === 'Automatizaciones'} onClick={() => setActiveSection('Automatizaciones')} collapsed={sidebarCollapsed} />
+            </div>
+          )}
+
+          {(role === 'GERENTE' || role === 'ADMINISTRACION' || role === 'RECLUTADORA') && (
+            <div className="pt-2">
+              {!sidebarCollapsed && <p className="px-3 mb-1 text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">Recursos</p>}
+              {sidebarCollapsed && <div className="h-px bg-white/5 mx-1 my-2" />}
+              <NavItem icon={Users} label="Reclutamiento" active={activeSection === 'Reclutamiento'} onClick={() => setActiveSection('Reclutamiento')} collapsed={sidebarCollapsed} />
+              <NavItem icon={Megaphone} label="Anuncios" active={activeSection === 'Anuncios'} onClick={() => setActiveSection('Anuncios')} collapsed={sidebarCollapsed} />
+            </div>
+          )}
+
+          {(role === 'GERENTE' || role === 'ADMINISTRACION') && (
+            <div className="pt-2">
+              {!sidebarCollapsed && <p className="px-3 mb-1 text-[9px] font-bold text-slate-500 uppercase tracking-[0.2em]">IA & Ajustes</p>}
+              {sidebarCollapsed && <div className="h-px bg-white/5 mx-1 my-2" />}
+              {role === 'GERENTE' && <NavItem icon={Brain} label="Centro de Agentes" active={activeSection === 'Agentes IA'} onClick={() => setActiveSection('Agentes IA')} highlight collapsed={sidebarCollapsed} />}
+              <NavItem icon={SettingsIcon} label="Ajustes" active={activeSection === 'Ajustes'} onClick={() => setActiveSection('Ajustes')} collapsed={sidebarCollapsed} />
+            </div>
+          )}
+        </nav>
+
+        <div className="p-2 border-t border-white/5 shrink-0">
+          <button
+            onClick={onBack}
+            title="Salir del Sistema"
+            className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'gap-2'} w-full px-3 py-2.5 text-xs font-bold text-slate-400 hover:text-white hover:bg-red-500/10 rounded-xl transition-all duration-300`}
+          >
+            <LogOut className="w-4 h-4 shrink-0" />
+            {!sidebarCollapsed && 'Salir del Sistema'}
+          </button>
+        </div>
+      </aside>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10">
