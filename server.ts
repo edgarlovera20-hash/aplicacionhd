@@ -142,12 +142,6 @@ async function startServer() {
     next();
   });
 
-  // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
-  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
-  const anthropicClient = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
-
-
-  app.use(express.json({ limit: '10mb' }));
 
   // ── Proveedor IA: Claude (primario) → Gemini (fallback) → OpenAI (último recurso) ──
   const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
@@ -578,30 +572,7 @@ async function startServer() {
       accion: string; modulo: string; detalles?: any; ts: string;
     };
 
-  /** Emite access + refresh tokens y persiste el hash del refresh en DB */
-  const issueTokenPair = async (uid: string, email: string, role: string) => {
-    const payload = { uid, email, role };
-    const accessToken  = signAccessToken(payload);
-    const refreshToken = signRefreshToken(payload);
-    if (isDbConnected) {
-      const tokenHash = hashToken(refreshToken);
-      await pool.query(
-        `INSERT INTO refresh_tokens (user_uid, token_hash, expires_at)
-         VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
-        [uid, tokenHash]
-      );
-    }
-    return { accessToken, refreshToken };
-  };
 
-  /** Opciones de cookie para el refresh token */
-  const refreshCookieOpts = {
-    httpOnly: true,
-    sameSite: 'strict' as const,
-    secure:   IS_PROD,
-    maxAge:   7 * 24 * 60 * 60 * 1000,
-    path:     '/api/auth',
-  };
 
     type MockDB = {
       users: MockUser[]; ventas: any[]; botCandidates: BotCandidate[];
@@ -926,58 +897,6 @@ async function startServer() {
         const parsed = registerSchema.safeParse(req.body);
         if (!parsed.success) return res.status(400).json({ error: zodError(parsed.error) });
         const { inviteToken, password, nombres, apellidoPaterno, usuario } = parsed.data;
-      audit(sess.uid, sess.email, 'CREATE_INVITATION', 'auth', { email, role });
-      res.status(201).json({ token, email, role, expiresAt: expiresAt.toISOString() });
-    } catch (e: any) {
-      console.error('[invitations]', e);
-      res.status(500).json({ error: 'Error en el servidor' });
-    }
-  });
-
-  // ── Listar invitaciones activas (gerente/administracion) ─────────────────
-  app.get("/api/invitations", requireRole('gerente', 'administracion'), async (req, res) => {
-    try {
-      if (isDbConnected) {
-        const { rows } = await pool.query(
-          "SELECT id, email, role, nombres, expires_at, used, created_at FROM invitations ORDER BY created_at DESC LIMIT 100"
-        );
-        res.json(rows);
-      } else {
-        const inv = (mockDb as any).__invitations as Map<string, any> | undefined;
-        if (!inv) return res.json([]);
-        const list = Array.from(inv.entries()).map(([token, v]) => ({ token, ...v }));
-        res.json(list);
-      }
-  // ── Revocar invitación ───────────────────────────────────────────────────
-  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
-    try {
-      const { token } = req.params;
-      if (isDbConnected) {
-        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
-      } else {
-        (mockDb as any).__invitations?.delete(token);
-      }
-      res.json({ ok: true });
-    } catch (e: any) {
-      res.status(500).json({ error: 'Error en el servidor' });
-    }
-  });
-
-  // ── Revocar invitación ───────────────────────────────────────────────────
-  app.delete("/api/invitations/:token", requireRole('gerente', 'administracion'), async (req, res) => {
-    try {
-      const { token } = req.params;
-      if (isDbConnected) {
-        await pool.query("DELETE FROM invitations WHERE token=$1", [token]);
-      } else {
-        (mockDb as any).__invitations?.delete(token);
-      }
-      res.json({ ok: true });
-    } catch (e: any) {
-      res.status(500).json({ error: 'Error en el servidor' });
-    }
-  });
-
         let finalEmail: string;
         let finalRole: string;
 
@@ -4111,8 +4030,6 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
           status: dbOk ? "ok" : "degraded",
           env: process.env.NODE_ENV || "development",
           db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
-          env: process.env.NODE_ENV || "development",
-          db: isDbConnected ? (dbOk ? "postgres-ok" : "postgres-error") : "mock",
           ts: new Date().toISOString(),
         });
       });
@@ -5342,121 +5259,6 @@ Responde EXCLUSIVAMENTE con un JSON: {"category":"...","confianza":0.0-1.0,"razo
         try { await pool.query('DELETE FROM automations WHERE id=$1', [req.params.id]); res.json({ ok: true }); }
         catch (e: any) { res.status(500).json({ error: e.message }); }
       });
-  // ── Redis + BullMQ init ───────────────────────────────────────────────────
-  await connectRedis();
-
-  // Inject pool into messageRouter for conversation persistence
-  injectPool(pool);
-
-  // ── Telegram bots init ───────────────────────────────────────────────────
-  await initTelegramBots();
-  // Wire all Telegram bots into the message router
-  for (const botCfg of telegramEngine.getActiveBots()) {
-    telegramEngine.onIncoming(botCfg.botId, async (msg) => {
-      await routeIncoming({
-        channel: 'telegram',
-        from: msg.chatId,
-        text: msg.text,
-        channelMeta: { botId: msg.botId, messageId: msg.messageId, from: msg.from },
-      });
-    });
-  }
-
-  // ── Facebook Messenger init ───────────────────────────────────────────────
-  facebookEngine.onIncoming(async (msg) => {
-    await routeIncoming({
-      channel: 'facebook',
-      from: msg.senderId,
-      text: msg.text,
-      channelMeta: { messageId: msg.messageId },
-    });
-  });
-
-  // ── AI Worker init (Phase 3) ──────────────────────────────────────────────
-  // Build a channel-agnostic sendToChannel helper
-  const sendToChannel = async (channel: string, from: string, text: string): Promise<boolean> => {
-    if (channel === 'telegram') {
-      const bots = telegramEngine.getActiveBots();
-      if (bots[0]) return telegramEngine.sendMessage(bots[0].botId, from, text);
-    } else if (channel === 'facebook') {
-      return facebookEngine.sendMessage(from, text);
-    }
-    return false;
-  };
-
-  injectWorkerDeps({
-    pool,
-    aiGenerate: (prompt: string) => aiGenerate(prompt),
-    sendToChannel,
-    addNotification: (n: unknown) => {
-      const notif = n as any;
-      pushNotif(notif.titulo || 'Notificación', notif.mensaje || '', notif.tipo || 'info', 'ai_worker', notif);
-    },
-  });
-  initAIWorker();
-
-  // ── Automation Engine init (Phase 5) ──────────────────────────��──────────
-  injectTriggerPool(pool);
-  injectAutomationDeps({
-    pool,
-    sendToChannel,
-    addNotification: (n: unknown) => {
-      const notif = n as any;
-      pushNotif(notif.titulo || 'Automatización', notif.mensaje || '', notif.tipo || 'info', 'automation', notif);
-    },
-  });
-  startTriggerPolling();
-  initAutomationWorker();
-
-  // Wire eventBus → automation trigger engine + analytics
-  eventBus.subscribe((event) => {
-    handleEvent(event).catch((err) => console.error('[EventBus→Trigger]', err.message));
-    // Record metrics
-    if (event.type === 'message.received')  recordMetric('messages_received').catch(() => {});
-    if (event.type === 'lead.created')      recordMetric('leads_created').catch(() => {});
-    if (event.type === 'automation.fired')  recordMetric('automations_fired').catch(() => {});
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[EventBus]', event.type, JSON.stringify(event.payload).slice(0, 120));
-    }
-  });
-
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`\nHeavenly Dreams CRM — ${process.env.NODE_ENV || 'development'} mode`);
-    console.log(`   -> http://localhost:${PORT}`);
-    console.log(`   -> DB: ${isDbConnected ? 'PostgreSQL' : 'Mock DB'}`);
-    console.log(`   -> Redis: ${process.env.REDIS_URL || 'redis://redis:6379'}`);
-    console.log(`   -> Agent registry: 6 system + recruitmentAgents (WA mode: ${whatsappEngine.getMode()})\n`);
-  });
-
-  // ── Graceful shutdown ─────────────────────────────────────────────────────
-  // Railway envía SIGTERM antes de matar el contenedor; queremos cerrar
-  // conexiones abiertas (HTTP, DB, SSE) limpiamente para no perder requests
-  // en vuelo.
-  let shuttingDown = false;
-  const shutdown = (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`\n[${signal}] Cerrando servidor...`);
-    const forceExit = setTimeout(() => {
-      console.error('[SHUTDOWN] Timeout de 10s — forzando salida.');
-      process.exit(1);
-    }, 10_000);
-    forceExit.unref();
-    server.close(async () => {
-      try { await pool.end(); } catch {}
-      try { stopTriggerPolling(); } catch {}
-      try { await closeAutomationWorker(); } catch {}
-      try { await closeAIWorker(); } catch {}
-      try { await closeQueues(); } catch {}
-      try { await disconnectRedis(); } catch {}
-      console.log('[SHUTDOWN] HTTP, DB y Redis cerrados. Bye.');
-      console.log('[SHUTDOWN] HTTP y DB cerrados. Bye.');
-      process.exit(0);
-    });
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
-
       // ── Telegram webhook ─────────────────────────────────���────────────────────
       // POST /api/webhooks/telegram/:botId
       app.post('/api/webhooks/telegram/:botId', (req, res) => {
